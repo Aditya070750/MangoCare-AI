@@ -1,0 +1,53 @@
+MANGOCARE AI | HOW TO USE
+
+START ON WINDOWS
+1. Extract the ZIP. Open PowerShell in the extracted MangoCare_AI folder,
+   where local_detection.py and requirements.txt are located.
+2. Install Python 3.13 if needed. This version was used to verify the app.
+3. Install the dependencies. The first installation needs internet access.
+
+   python -m pip install -r requirements.txt
+
+4. Start the app and leave PowerShell open.
+
+   python .\local_detection.py
+
+5. Open http://127.0.0.1:8765/ in Chrome or Edge.
+   Press Ctrl+C in PowerShell to stop the app.
+
+DETECTION | FIND WHERE
+Upload or drop photos in Detection, then select Run Detection.
+The detector draws boxes for Anthracnose, Powdery Mildew, or Healthy
+regions. The confidence slider filters which boxes are shown.
+
+For a live scan, select Webcam, then Start Camera, and allow access in
+the browser. Capture Photo adds a still to the photo queue. Select Run
+Detection to save the scan. Select Download PDF on a result or in
+Detection history to export its report.
+
+CLASSIFICATION | GET ONE LABEL
+Upload a photo showing one mango leaf and select Classify Photos. For a
+webcam scan, select Webcam, Start Camera, then Capture Photo to classify
+the captured still. Each result shows Anthracnose or Healthy and scores
+for both labels. Use Detection to check for Powdery Mildew.
+
+Expand the care section on a result to see relevant precautions and
+treatment or routine care. A model score alone cannot confirm a disease.
+
+TROUBLESHOOTING
+- If the page is unavailable, confirm PowerShell is still running and
+  reports http://127.0.0.1:8765/. Close any earlier MangoCare instance
+  before starting another copy on the same port.
+- Keep best.pt and mangocare_classifier.pt beside local_detection.py.
+  Both trained checkpoints are included. No training is needed to run.
+- If the webcam fails, check browser and Windows camera permissions.
+  Close other apps that are using the camera, or use photo upload.
+- Detection history lives in a local database created when the app runs.
+  The archive starts with a fresh history.
+
+FOR GITHUB
+Upload the extracted folder's contents to the repository root, including
+.gitignore. The ZIP contains the app source, trained weights, and optional
+training code. Original datasets and local scan records are excluded.
+Check the Ultralytics model and source license guidance before public
+distribution: https://www.ultralytics.com/license

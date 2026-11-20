@@ -1,0 +1,16 @@
+__pycache__/
+*.py[cod]
+.ipynb_checkpoints/
+.venv/
+venv/
+.env
+.env.*
+*.log
+*.sqlite3
+*.sqlite3-*
+Ultralytics/
+runs/
+datasets/
+Classification/prepared/
+Classification/Anthracnose/
+Classification/Healthy/
