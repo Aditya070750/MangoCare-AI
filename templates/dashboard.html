@@ -1,0 +1,63 @@
+{% macro scan_tool(tool, ready, presets) %}
+{% set classification = tool == 'classification' %}
+<section class="scan-tool" id="{{ tool }}" data-scan-tool data-ready="{{ '1' if ready else '0' }}" aria-labelledby="{{ tool }}-heading">
+  <header class="tool-heading">
+    <h2 id="{{ tool }}-heading">{{ 'Classification' if classification else 'Detection' }}</h2>
+    <p>{{ 'Use one leaf per photo. Powdery Mildew is only checked in Detection.' if classification else 'Upload a photo or scan live with your webcam.' }}</p>
+  </header>
+  {% if not ready %}
+  <p class="warning" role="alert">Place {{ 'mangocare_classifier.pt' if classification else 'best.pt' }} beside local_detection.py to enable this tool.</p>
+  {% endif %}
+  <div class="work-grid">
+    <section class="card controls" aria-labelledby="{{ tool }}-input-heading">
+      <h3 id="{{ tool }}-input-heading">Image source</h3>
+      <div class="switch">
+        <button id="{{ tool }}-files-mode" type="button" aria-pressed="true">Photos</button>
+        <button id="{{ tool }}-camera-mode" type="button" aria-pressed="false">Webcam</button>
+      </div>
+      <div id="{{ tool }}-files-panel">
+        <label class="drop" id="{{ tool }}-drop" for="{{ tool }}-photos"><strong>Choose or drop photos</strong><span>JPG, PNG, WebP · 12 MB each</span><input type="file" id="{{ tool }}-photos" multiple accept="image/jpeg,image/png,image/webp"></label>
+        <ul id="{{ tool }}-queue" class="queue" aria-label="Selected photos"></ul>
+      </div>
+      <div id="{{ tool }}-camera-panel" hidden>
+        <div class="actions">
+          <button id="{{ tool }}-start-camera" type="button">Start Camera</button>
+          <button id="{{ tool }}-stop-camera" type="button" disabled>Stop Camera</button>
+          <button id="{{ tool }}-capture" type="button" disabled>Capture Photo</button>
+        </div>
+        <p id="{{ tool }}-fps" class="muted">Camera off</p>
+      </div>
+      {% if not classification %}
+      <div class="confidence">
+        <label for="{{ tool }}-confidence"><strong>Minimum detection confidence</strong> <output id="{{ tool }}-confidence-value" for="{{ tool }}-confidence">25%</output></label>
+        <input id="{{ tool }}-confidence" type="range" min="1" max="99" value="25">
+        <div class="presets">{% for preset, value in presets.items() %}<button type="button" data-confidence="{{ (value * 100)|int }}" aria-pressed="{{ 'true' if preset == 'High' else 'false' }}">{{ preset }}</button>{% endfor %}</div>
+      </div>
+      {% endif %}
+      <div class="actions">
+        <button id="{{ tool }}-run" class="primary" type="button" disabled>{{ 'Classify Photos' if classification else 'Run Detection' }}</button>
+        <button id="{{ tool }}-reset" class="quiet" type="button">Reset</button>
+      </div>
+      <p id="{{ tool }}-status" class="scan-status" role="status"></p>
+    </section>
+    <section class="card viewer" aria-labelledby="{{ tool }}-preview-heading">
+      <div class="row"><h3 id="{{ tool }}-preview-heading">Preview</h3><div class="actions">
+        <button id="{{ tool }}-zoom-out" type="button" aria-label="Zoom out" disabled>−</button>
+        <button id="{{ tool }}-zoom-in" type="button" aria-label="Zoom in" disabled>+</button>
+        <button id="{{ tool }}-zoom-reset" type="button" disabled>Fit</button>
+      </div></div>
+      <div id="{{ tool }}-viewport" class="viewport">
+        <p id="{{ tool }}-empty" class="muted">Choose a photo to see its preview.</p>
+        <div id="{{ tool }}-stage" class="scan-stage" hidden>
+          <img id="{{ tool }}-preview" alt="Selected mango leaf photo">
+          <video id="{{ tool }}-video" autoplay muted playsinline hidden></video>
+          {% if not classification %}<canvas id="{{ tool }}-boxes" aria-hidden="true"></canvas>{% endif %}
+        </div>
+        <div class="scanline" aria-hidden="true"></div>
+      </div>
+      {% if not classification %}<p id="{{ tool }}-live-results" class="muted" hidden></p>{% endif %}
+    </section>
+  </div>
+  <div id="{{ tool }}-results" class="results" aria-live="polite"></div>
+</section>
+{% endmacro %}

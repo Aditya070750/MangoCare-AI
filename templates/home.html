@@ -1,0 +1,56 @@
+{% extends "base.html" %}
+{% from "dashboard.html" import scan_tool %}
+{% block head %}
+<script defer src="{{ url_for('static', filename='theme.js') }}"></script>
+<script defer src="{{ url_for('static', filename='dashboard.js') }}"></script>
+{% endblock %}
+{% block body %}
+<main class="shell">
+  <header class="site-header">
+    <a class="brand" href="{{ url_for('home') }}">MangoCare <span>AI</span></a>
+    <button class="quiet" type="button" id="theme">Day / Night</button>
+  </header>
+  <section class="hero" aria-labelledby="hero-heading">
+    <div class="hero-copy">
+      <h1 id="hero-heading">A closer look at mango leaves.</h1>
+      <p>Scan mango leaves from a photo or webcam to spot possible signs of disease.</p>
+      <div class="actions">
+        <a class="button primary" href="#detection">Try Detection</a>
+        <a class="button hero-secondary" href="#classification">Try Classification</a>
+      </div>
+    </div>
+    <img class="hero-image" src="{{ url_for('static', filename='mango-orchard.webp') }}" alt="Glossy green mango leaves in an orchard" width="1280" height="720">
+  </section>
+  <div class="overview">
+    <section class="overview-panel" aria-labelledby="disease-heading">
+      <h2 id="disease-heading">What to look for</h2>
+      <dl>
+        <dt>Anthracnose</dt><dd>A fungal disease that leaves irregular dark spots on mango leaves.</dd>
+        <dt>Powdery Mildew</dt><dd>A fungus that looks like a white dusting, often on young leaves and shoots.</dd>
+      </dl>
+    </section>
+    <section class="overview-panel" aria-labelledby="tools-heading">
+      <h2 id="tools-heading">Pick the right scan</h2>
+      <dl>
+        <dt>Detection</dt><dd>Find where a problem might be. Boxes mark possible Anthracnose, Powdery Mildew, or healthy areas.</dd>
+        <dt>Classification</dt><dd>Get a quick label for one leaf photo. It predicts Anthracnose or Healthy.</dd>
+      </dl>
+    </section>
+  </div>
+  {{ scan_tool('detection', detection_ready, presets) }}
+  {{ scan_tool('classification', classification_ready, presets) }}
+  <p class="muted page-note">{{ note }} <a href="{{ source }}">UF/IFAS mango care guide</a></p>
+  <section id="history" class="card lower">
+    <div class="row"><h2>Detection history</h2><button id="detection-clear-history" class="quiet" type="button">Clear history</button></div>
+    <p class="muted">Saved on this laptop. Photos are kept only while this page is open.</p>
+    <div id="detection-history-list" class="history-list"></div>
+    <details id="detection-legacy" hidden><summary>Earlier browser history</summary><ul id="detection-legacy-list"></ul></details>
+  </section>
+  <section id="statistics" class="card lower">
+    <h2>Detection confidence statistics</h2><p id="detection-overall" class="muted"></p>
+    <div id="detection-statistics-list" class="metrics"></div>
+    <p class="muted">Averages use saved detections. Model confidence is a score, not a measure of correctness.</p>
+  </section>
+</main>
+<script id="project-data" type="application/json">{{ {"classes": classes, "care": care}|tojson }}</script>
+{% endblock %}
