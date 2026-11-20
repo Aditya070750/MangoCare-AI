@@ -1,0 +1,12 @@
+<!doctype html>
+<html lang="en" data-theme="day">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block title %}MangoCare AI{% endblock %}</title>
+  <script>try { document.documentElement.dataset.theme = localStorage.getItem("mangocare-theme") || (matchMedia("(prefers-color-scheme: dark)").matches ? "night" : "day"); } catch {}</script>
+  <link rel="stylesheet" href="{{ url_for('static', filename='mangocare.css') }}">
+  {% block head %}{% endblock %}
+</head>
+<body>{% block body %}{% endblock %}</body>
+</html>
