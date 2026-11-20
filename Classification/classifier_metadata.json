@@ -1,0 +1,14 @@
+{
+  "task": "classify",
+  "class_ids": {
+    "0": "Anthracnose",
+    "1": "Healthy"
+  },
+  "image_size": 224,
+  "epochs": 25,
+  "training_images": {
+    "Anthracnose": 18,
+    "Healthy": 73
+  },
+  "independent_evaluation": false
+}
