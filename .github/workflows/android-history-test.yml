@@ -55,7 +55,7 @@ jobs:
           def find(*labels, tries=5):
               for _ in range(tries):
                   nodes = ui()
-                  node = next((node for node in nodes if node.get('text') in labels or node.get('content-desc') in labels), None)
+                  node = next((node for node in nodes if node.get('text') in labels or node.get('content-desc') in labels or any(node.get('content-desc', '').startswith(label + ', ') for label in labels)), None)
                   if node is not None:
                       return node
               raise AssertionError((labels, [(node.get('text'), node.get('content-desc')) for node in nodes]))
@@ -80,6 +80,8 @@ jobs:
           tap('Show roots', 'Open navigation drawer')
           tap('Downloads')
           tap('MangoCare-sample.webp')
+          if any(node.get('text') == 'Open' for node in ui()):
+              tap('Open')
           tap('Classify photos')
           find('Scan complete.', tries=10)
           tap('Reset')
