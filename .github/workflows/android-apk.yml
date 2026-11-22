@@ -1,0 +1,46 @@
+name: MangoCare Android APK
+
+on:
+  push:
+    branches: [android-app]
+    paths:
+      - 'android/assets/**'
+      - 'android/native/**'
+      - '.github/workflows/android-apk.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: gradle/actions/setup-gradle@v6
+        with:
+          gradle-version: '9.3.1'
+          cache-disabled: true
+      - name: Build and lint
+        working-directory: android/native
+        run: gradle --no-daemon :app:lintDebug :app:assembleDebug
+      - name: Verify APK signature and bundled models
+        run: |
+          apk=android/native/app/build/outputs/apk/debug/app-debug.apk
+          "$ANDROID_HOME/build-tools/36.0.0/apksigner" verify --verbose "$apk"
+          for asset in android/assets/*; do
+            unzip -p "$apk" "assets/$(basename "$asset")" | cmp - "$asset"
+          done
+          cp "$apk" MangoCare-AI-debug.apk
+      - uses: actions/upload-artifact@v7
+        with:
+          name: MangoCare-Android-APK
+          path: MangoCare-AI-debug.apk
+          if-no-files-found: error
