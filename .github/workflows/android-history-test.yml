@@ -41,6 +41,7 @@ jobs:
           import json
           import re
           import subprocess
+          import time
           import xml.etree.ElementTree as ET
           from pathlib import Path
 
@@ -68,6 +69,8 @@ jobs:
           adb('install', 'MangoCare-AI-debug.apk')
           adb('shell', 'mkdir', '-p', '/sdcard/Download')
           adb('push', 'MangoCare-sample.webp', '/sdcard/Download/MangoCare-sample.webp')
+          adb('shell', 'am', 'force-stop', 'com.google.android.apps.nexuslauncher')
+          time.sleep(3)
           adb('shell', 'am', 'start', '-W', '-n', activity)
           tap('History')
           find('No scans yet.')
@@ -81,6 +84,8 @@ jobs:
           find('Scan complete.', tries=10)
           tap('Reset')
           adb('shell', 'am', 'force-stop', package)
+          adb('shell', 'am', 'force-stop', 'com.google.android.apps.nexuslauncher')
+          time.sleep(3)
           adb('shell', 'am', 'start', '-W', '-n', activity)
           tap('History')
           caption = find('Classification · Healthy', 'Classification · Anthracnose').get('text')
