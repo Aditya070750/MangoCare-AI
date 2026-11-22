@@ -1,0 +1,122 @@
+name: Check optimized MangoCare Android app
+
+on:
+  push:
+    branches: [android-app]
+    paths: ['.github/workflows/android-optimized-test.yml']
+
+permissions:
+  actions: read
+  contents: read
+
+jobs:
+  history:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 18
+    steps:
+      - name: Wait for signed APK
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          for attempt in $(seq 1 24); do
+            status=$(gh api repos/"$GITHUB_REPOSITORY"/actions/runs/45007170839 --jq '.status')
+            if [ "$status" = completed ]; then
+              test "$(gh api repos/"$GITHUB_REPOSITORY"/actions/runs/45007170839 --jq '.conclusion')" = success
+              exit
+            fi
+            sleep 10
+          done
+          exit 1
+      - uses: actions/download-artifact@v8
+        with:
+          name: MangoCare-Android-APK
+          run-id: 45007170839
+          github-token: ${{ github.token }}
+      - name: Prepare emulator and test script
+        run: |
+          sudo chmod a+rw /dev/kvm
+          curl --fail --silent --show-error --location --max-time 20 -o MangoCare-sample.webp https://aditya070750.github.io/MangoCare-AI/static/mango-orchard.webp
+          cat > /tmp/check-history.py <<'PY'
+          import base64
+          import json
+          import re
+          import subprocess
+          import time
+          import xml.etree.ElementTree as ET
+          from pathlib import Path
+
+          def adb(*args, capture=False):
+              return subprocess.run(['adb', *args], check=True, stdout=subprocess.PIPE if capture else None).stdout
+
+          def ui():
+              adb('shell', 'uiautomator', 'dump', '/sdcard/mangocare-ui.xml', capture=True)
+              return tuple(ET.fromstring(adb('exec-out', 'cat', '/sdcard/mangocare-ui.xml', capture=True)).iter('node'))
+
+          def find(*labels, tries=5):
+              for _ in range(tries):
+                  nodes = ui()
+                  node = next((node for node in nodes if node.get('text') in labels or ('Live ·' in labels and node.get('text', '').startswith('Live · ')) or node.get('content-desc') in labels or any(node.get('content-desc', '').startswith(label + ', ') for label in labels)), None)
+                  if node is not None:
+                      return node
+              raise AssertionError((labels, [(node.get('text'), node.get('content-desc')) for node in nodes]))
+
+          def tap(*labels):
+              x1, y1, x2, y2 = map(int, re.findall(r'\d+', find(*labels).get('bounds')))
+              adb('shell', 'input', 'tap', str((x1 + x2) // 2), str((y1 + y2) // 2))
+
+          package = 'com.mangocare.app'
+          activity = package + '/.MainActivity'
+          adb('install', 'MangoCare-AI-universal.apk')
+          adb('shell', 'mkdir', '-p', '/sdcard/Download')
+          adb('push', 'MangoCare-sample.webp', '/sdcard/Download/MangoCare-sample.webp')
+          adb('shell', 'am', 'force-stop', 'com.google.android.apps.nexuslauncher')
+          time.sleep(3)
+          adb('shell', 'am', 'start', '-W', '-n', activity)
+          tap('History')
+          find('No scans yet.')
+          tap('Back to scanner')
+          tap('Classification')
+          tap('Add photos')
+          tap('Show roots', 'Open navigation drawer')
+          tap('Downloads')
+          tap('MangoCare-sample.webp')
+          if any(node.get('text') == 'Open' for node in ui()):
+              tap('Open')
+          tap('Classify photos')
+          find('Scan complete.', tries=10)
+          tap('Detection')
+          tap('Run detection')
+          find('Scan complete.', tries=10)
+          adb('shell', 'pm', 'grant', package, 'android.permission.CAMERA')
+          tap('Start live detection')
+          find('Live ·', tries=10)
+          tap('Stop live detection')
+          tap('Reset')
+          adb('shell', 'am', 'force-stop', package)
+          adb('shell', 'am', 'force-stop', 'com.google.android.apps.nexuslauncher')
+          time.sleep(3)
+          adb('shell', 'am', 'start', '-W', '-n', activity)
+          tap('History')
+          caption = find('Classification · Healthy', 'Classification · Anthracnose').get('text')
+          find('Scanned photo')
+          history = json.loads(adb('exec-out', 'run-as', package, 'cat', 'files/scan-history.json', capture=True))
+          assert len(history) == 2 and all(set(entry) == {'caption', 'thumbnail'} for entry in history)
+          assert history[0]['caption'].startswith('Detection · ') and history[1]['caption'] == caption
+          assert all(base64.b64decode(entry['thumbnail']).startswith(b'\xff\xd8') for entry in history)
+          Path('MangoCare-History.png').write_bytes(adb('exec-out', 'screencap', '-p', capture=True))
+          print('Verified classification, photo detection, live camera inference, and saved history after Reset and restart.')
+          PY
+      - uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 35
+          target: google_apis
+          arch: x86_64
+          profile: pixel_6
+          disable-animations: true
+          emulator-options: -no-window -gpu swiftshader_indirect -no-snapshot -noaudio -no-boot-anim -camera-back virtualscene
+          script: python3 /tmp/check-history.py
+      - uses: actions/upload-artifact@v7
+        with:
+          name: MangoCare-Optimized-Test
+          path: MangoCare-History.png
+          if-no-files-found: error
