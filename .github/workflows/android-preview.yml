@@ -1,0 +1,54 @@
+name: Capture MangoCare Android interface
+
+on:
+  push:
+    branches: [android-app]
+    paths: ['.github/workflows/android-preview.yml']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  capture:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 18
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          name: MangoCare-Android-APK
+          run-id: 45004122491
+          github-token: ${{ github.token }}
+      - name: Enable KVM access
+        run: sudo chmod a+rw /dev/kvm
+      - uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 35
+          target: google_apis
+          arch: x86_64
+          profile: pixel_6
+          disable-animations: true
+          emulator-options: -no-window -gpu swiftshader_indirect -no-snapshot -noaudio -no-boot-anim
+          script: |
+            adb install MangoCare-AI-debug.apk
+            adb shell cmd uimode night no
+            adb shell am start -W -n com.mangocare.app/.MainActivity
+            adb shell uiautomator dump /sdcard/mangocare-ui.xml
+            adb pull /sdcard/mangocare-ui.xml day.xml
+            python3 -c 'import xml.etree.ElementTree as E; d=E.parse("day.xml"); assert any(x.get("text")=="Start live detection" for x in d.iter("node")); assert any(x.get("text")=="Add photos" for x in d.iter("node"))'
+            adb exec-out screencap -p > MangoCare-Day-Detection.png
+            adb shell input tap $(python3 -c 'import re,xml.etree.ElementTree as E; d=E.parse("day.xml"); x=next(x for x in d.iter("node") if x.get("text")=="Night mode"); a,b,c,e=map(int,re.findall(r"\d+",x.get("bounds"))); print((a+c)//2,(b+e)//2)')
+            adb shell uiautomator dump /sdcard/mangocare-ui.xml
+            adb pull /sdcard/mangocare-ui.xml night.xml
+            python3 -c 'import xml.etree.ElementTree as E; assert any(x.get("text")=="Day mode" for x in E.parse("night.xml").iter("node"))'
+            adb shell input tap $(python3 -c 'import re,xml.etree.ElementTree as E; d=E.parse("night.xml"); x=next(x for x in d.iter("node") if x.get("text")=="Classification"); a,b,c,e=map(int,re.findall(r"\d+",x.get("bounds"))); print((a+c)//2,(b+e)//2)')
+            adb shell uiautomator dump /sdcard/mangocare-ui.xml
+            adb pull /sdcard/mangocare-ui.xml classification.xml
+            python3 -c 'import xml.etree.ElementTree as E; assert any(x.get("text")=="Classify photos" for x in E.parse("classification.xml").iter("node"))'
+            adb exec-out screencap -p > MangoCare-Night-Classification.png
+      - uses: actions/upload-artifact@v7
+        with:
+          name: MangoCare-Android-Screenshots
+          path: MangoCare-*.png
+          if-no-files-found: error
