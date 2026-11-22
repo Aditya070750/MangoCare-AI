@@ -5,6 +5,7 @@ window.mangocareBrowser = (() => {
   const liteRtPackage = "https://cdn.jsdelivr.net/npm/@litertjs/core@2.6.0";
   const labels = ["Anthracnose", "Powdery Mildew", "Healthy"];
   const classifierLabels = ["Anthracnose", "Healthy"];
+  const detectorName = "mangocare_yolo11n_float32.tflite";
   const historyKey = "mangocare-pages-history";
   let runtime;
   const models = new Map();
@@ -22,13 +23,24 @@ window.mangocareBrowser = (() => {
     });
     const api = await runtime;
     if (!models.has(name)) {
-      const url = new URL(name, staticDir).href;
-      models.set(name, api.loadAndCompile(url, {accelerator: "wasm"}).catch((error) => {
+      models.set(name, compileModel(api, name).catch((error) => {
         models.delete(name);
         throw error;
       }));
     }
     return {model: await models.get(name), Tensor: api.Tensor};
+  }
+
+  async function compileModel(api, name) {
+    const source = new URL(name, staticDir);
+    if (name !== detectorName) return api.loadAndCompile(source, {accelerator: "wasm"});
+    const parts = await Promise.all([0, 1, 2].map(async (index) => {
+      const response = await fetch(`${source.href}.${index}`);
+      if (!response.ok) throw new Error("Could not download the detection model. Please try again.");
+      return response.arrayBuffer();
+    }));
+    const bytes = new Uint8Array(await new Blob(parts).arrayBuffer());
+    return api.loadAndCompile(bytes, {accelerator: "wasm"});
   }
 
   function canvas(width, height) {
@@ -143,7 +155,7 @@ window.mangocareBrowser = (() => {
     const size = 640;
     const photo = await readPhoto(file);
     const prepared = prepare(photo, size, false);
-    const raw = await predict("mangocare_yolo11n_float32.tflite", size, prepared.rgb, signal);
+    const raw = await predict(detectorName, size, prepared.rgb, signal);
     signal?.throwIfAborted();
     const detections = decode(raw, prepared, threshold);
     if (live) return {detections, device: "browser"};
