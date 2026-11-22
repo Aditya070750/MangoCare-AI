@@ -1,0 +1,179 @@
+<!doctype html>
+<html lang="en" data-theme="day">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>MangoCare AI</title>
+  <script>try { document.documentElement.dataset.theme = localStorage.getItem("mangocare-theme") || (matchMedia("(prefers-color-scheme: dark)").matches ? "night" : "day"); } catch {}</script>
+  <link rel="stylesheet" href="static/mangocare.css">
+
+<script defer src="static/theme.js"></script>
+<script defer src="static/browser.js"></script>
+<script defer src="static/dashboard.js"></script>
+
+</head>
+<body>
+<main class="shell">
+  <header class="site-header">
+    <a class="brand" href="./">MangoCare <span>AI</span></a>
+    <button class="quiet" type="button" id="theme">Day / Night</button>
+  </header>
+  <section class="hero" aria-labelledby="hero-heading">
+    <div class="hero-copy">
+      <h1 id="hero-heading">A closer look at mango leaves.</h1>
+      <p>Scan mango leaves from a photo or webcam to spot possible signs of disease.</p>
+      <div class="actions">
+        <a class="button primary" href="#detection">Try Detection</a>
+        <a class="button hero-secondary" href="#classification">Try Classification</a>
+      </div>
+    </div>
+    <img class="hero-image" src="static/mango-orchard.webp" alt="Glossy green mango leaves in an orchard" width="1280" height="720">
+  </section>
+  <div class="overview">
+    <section class="overview-panel" aria-labelledby="disease-heading">
+      <h2 id="disease-heading">What to look for</h2>
+      <dl>
+        <dt>Anthracnose</dt><dd>A fungal disease that leaves irregular dark spots on mango leaves.</dd>
+        <dt>Powdery Mildew</dt><dd>A fungus that looks like a white dusting, often on young leaves and shoots.</dd>
+      </dl>
+    </section>
+    <section class="overview-panel" aria-labelledby="tools-heading">
+      <h2 id="tools-heading">Pick the right scan</h2>
+      <dl>
+        <dt>Detection</dt><dd>Find where a problem might be. Boxes mark possible Anthracnose, Powdery Mildew, or healthy areas.</dd>
+        <dt>Classification</dt><dd>Get a quick label for one leaf photo. It predicts Anthracnose or Healthy.</dd>
+      </dl>
+    </section>
+  </div>
+
+
+<section class="scan-tool" id="detection" data-scan-tool data-ready="1" aria-labelledby="detection-heading">
+  <header class="tool-heading">
+    <h2 id="detection-heading">Detection</h2>
+    <p>Upload a photo or scan live with your webcam.</p>
+  </header>
+
+  <div class="work-grid">
+    <section class="card controls" aria-labelledby="detection-input-heading">
+      <h3 id="detection-input-heading">Image source</h3>
+      <div class="switch">
+        <button id="detection-files-mode" type="button" aria-pressed="true">Photos</button>
+        <button id="detection-camera-mode" type="button" aria-pressed="false">Webcam</button>
+      </div>
+      <div id="detection-files-panel">
+        <label class="drop" id="detection-drop" for="detection-photos"><strong>Choose or drop photos</strong><span>JPG, PNG, WebP · 12 MB each</span><input type="file" id="detection-photos" multiple accept="image/jpeg,image/png,image/webp"></label>
+        <ul id="detection-queue" class="queue" aria-label="Selected photos"></ul>
+      </div>
+      <div id="detection-camera-panel" hidden>
+        <div class="actions">
+          <button id="detection-start-camera" type="button">Start Camera</button>
+          <button id="detection-stop-camera" type="button" disabled>Stop Camera</button>
+          <button id="detection-capture" type="button" disabled>Capture Photo</button>
+        </div>
+        <p id="detection-fps" class="muted">Camera off</p>
+      </div>
+
+      <div class="confidence">
+        <label for="detection-confidence"><strong>Minimum detection confidence</strong> <output id="detection-confidence-value" for="detection-confidence">25%</output></label>
+        <input id="detection-confidence" type="range" min="1" max="99" value="25">
+        <div class="presets"><button type="button" data-confidence="65" aria-pressed="false">Light</button><button type="button" data-confidence="45" aria-pressed="false">Medium</button><button type="button" data-confidence="25" aria-pressed="true">High</button><button type="button" data-confidence="10" aria-pressed="false">Ultra</button></div>
+      </div>
+
+      <div class="actions">
+        <button id="detection-run" class="primary" type="button" disabled>Run Detection</button>
+        <button id="detection-reset" class="quiet" type="button">Reset</button>
+      </div>
+      <p id="detection-status" class="scan-status" role="status"></p>
+    </section>
+    <section class="card viewer" aria-labelledby="detection-preview-heading">
+      <div class="row"><h3 id="detection-preview-heading">Preview</h3><div class="actions">
+        <button id="detection-zoom-out" type="button" aria-label="Zoom out" disabled>−</button>
+        <button id="detection-zoom-in" type="button" aria-label="Zoom in" disabled>+</button>
+        <button id="detection-zoom-reset" type="button" disabled>Fit</button>
+      </div></div>
+      <div id="detection-viewport" class="viewport">
+        <p id="detection-empty" class="muted">Choose a photo to see its preview.</p>
+        <div id="detection-stage" class="scan-stage" hidden>
+          <img id="detection-preview" alt="Selected mango leaf photo">
+          <video id="detection-video" autoplay muted playsinline hidden></video>
+          <canvas id="detection-boxes" aria-hidden="true"></canvas>
+        </div>
+        <div class="scanline" aria-hidden="true"></div>
+      </div>
+      <p id="detection-live-results" class="muted" hidden></p>
+    </section>
+  </div>
+  <div id="detection-results" class="results" aria-live="polite"></div>
+</section>
+
+
+
+<section class="scan-tool" id="classification" data-scan-tool data-ready="1" aria-labelledby="classification-heading">
+  <header class="tool-heading">
+    <h2 id="classification-heading">Classification</h2>
+    <p>Use one leaf per photo. Powdery Mildew is only checked in Detection.</p>
+  </header>
+
+  <div class="work-grid">
+    <section class="card controls" aria-labelledby="classification-input-heading">
+      <h3 id="classification-input-heading">Image source</h3>
+      <div class="switch">
+        <button id="classification-files-mode" type="button" aria-pressed="true">Photos</button>
+        <button id="classification-camera-mode" type="button" aria-pressed="false">Webcam</button>
+      </div>
+      <div id="classification-files-panel">
+        <label class="drop" id="classification-drop" for="classification-photos"><strong>Choose or drop photos</strong><span>JPG, PNG, WebP · 12 MB each</span><input type="file" id="classification-photos" multiple accept="image/jpeg,image/png,image/webp"></label>
+        <ul id="classification-queue" class="queue" aria-label="Selected photos"></ul>
+      </div>
+      <div id="classification-camera-panel" hidden>
+        <div class="actions">
+          <button id="classification-start-camera" type="button">Start Camera</button>
+          <button id="classification-stop-camera" type="button" disabled>Stop Camera</button>
+          <button id="classification-capture" type="button" disabled>Capture Photo</button>
+        </div>
+        <p id="classification-fps" class="muted">Camera off</p>
+      </div>
+
+      <div class="actions">
+        <button id="classification-run" class="primary" type="button" disabled>Classify Photos</button>
+        <button id="classification-reset" class="quiet" type="button">Reset</button>
+      </div>
+      <p id="classification-status" class="scan-status" role="status"></p>
+    </section>
+    <section class="card viewer" aria-labelledby="classification-preview-heading">
+      <div class="row"><h3 id="classification-preview-heading">Preview</h3><div class="actions">
+        <button id="classification-zoom-out" type="button" aria-label="Zoom out" disabled>−</button>
+        <button id="classification-zoom-in" type="button" aria-label="Zoom in" disabled>+</button>
+        <button id="classification-zoom-reset" type="button" disabled>Fit</button>
+      </div></div>
+      <div id="classification-viewport" class="viewport">
+        <p id="classification-empty" class="muted">Choose a photo to see its preview.</p>
+        <div id="classification-stage" class="scan-stage" hidden>
+          <img id="classification-preview" alt="Selected mango leaf photo">
+          <video id="classification-video" autoplay muted playsinline hidden></video>
+
+        </div>
+        <div class="scanline" aria-hidden="true"></div>
+      </div>
+
+    </section>
+  </div>
+  <div id="classification-results" class="results" aria-live="polite"></div>
+</section>
+
+  <p class="muted page-note">AI predictions support observation. Confidence is a model score, and a photo alone cannot confirm a diagnosis or disease severity. <a href="https://ask.ifas.ufl.edu/publication/mg216">UF/IFAS mango care guide</a></p>
+  <section id="history" class="card lower">
+    <div class="row"><h2>Detection history</h2><button id="detection-clear-history" class="quiet" type="button">Clear history</button></div>
+    <p class="muted">Saved in this browser. Photos are kept only while this page is open.</p>
+    <div id="detection-history-list" class="history-list"></div>
+    <details id="detection-legacy" hidden><summary>Earlier browser history</summary><ul id="detection-legacy-list"></ul></details>
+  </section>
+  <section id="statistics" class="card lower">
+    <h2>Detection confidence statistics</h2><p id="detection-overall" class="muted"></p>
+    <div id="detection-statistics-list" class="metrics"></div>
+    <p class="muted">Averages use saved detections. Model confidence is a score, not a measure of correctness.</p>
+  </section>
+</main>
+<script id="project-data" type="application/json">{"care": {"Anthracnose": {"Causes": ["Colletotrichum fungi infect susceptible mango tissue.", "Rain splash and extended leaf wetness favor spread."], "Precautions": ["Water the soil and avoid wetting foliage or flowers.", "Thin dense growth so leaves dry sooner after rain."], "Treatment": ["Remove infected debris and prune affected twigs.", "Ask local agricultural extension whether a labeled treatment is appropriate."], "description": "A fungal disease that can leave irregular dark brown or black spots on mango leaves. It can also affect flowers, twigs, and fruit."}, "Healthy": {"Care": ["Continue normal watering and pruning.", "Seek local advice if persistent spots or powdery growth appear."], "Precautions": ["Water the root zone and keep foliage dry.", "Monitor new growth after changes in weather."], "What to check": ["Look for a uniform color and intact leaf tissue.", "Inspect other leaves and flowers for symptoms outside the photo."], "description": "The visible leaf tissue matched the model\u2019s Healthy class."}, "Powdery Mildew": {"Causes": ["Powdery mildew fungi produce spores on infected tissue.", "Tender leaves and flower clusters are especially susceptible."], "Precautions": ["Maintain airflow through the canopy.", "Check new shoots and flower clusters during flowering."], "Treatment": ["Remove visibly affected growth where practical.", "Ask local agricultural extension about suitable labeled options if symptoms spread."], "description": "A fungal disease that can leave a white, powder-like coating on young mango leaves, shoots, and flower clusters."}}, "classes": ["Anthracnose", "Powdery Mildew", "Healthy"]}</script>
+</body>
+</html>
