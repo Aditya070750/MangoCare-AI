@@ -15,6 +15,7 @@ import java.io.IOException;
 import java.io.InputStreamReader;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
+import java.nio.FloatBuffer;
 import java.nio.channels.FileChannel;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
@@ -25,6 +26,7 @@ final class MangoModels implements AutoCloseable {
     private static final int DETECTION_SIZE = 640;
     private static final int CLASSIFICATION_SIZE = 224;
     private static final int ANCHORS = 8400;
+    private static final float[] RGB_VALUES = normalizedChannels();
     private final AssetManager assets;
     private final List<String> detectionLabels;
     private final List<String> classificationLabels;
@@ -134,6 +136,12 @@ final class MangoModels implements AutoCloseable {
         return Math.max(0, Math.min(1, number));
     }
 
+    private static float[] normalizedChannels() {
+        float[] values = new float[256];
+        for (int i = 0; i < values.length; i++) values[i] = i / 255f;
+        return values;
+    }
+
     private static float overlap(RectF a, RectF b) {
         float width = Math.max(0, Math.min(a.right, b.right) - Math.max(a.left, b.left));
         float height = Math.max(0, Math.min(a.bottom, b.bottom) - Math.max(a.top, b.top));
@@ -147,6 +155,7 @@ final class MangoModels implements AutoCloseable {
         private final Canvas canvas;
         private final int[] pixels;
         private final ByteBuffer bytes;
+        private final FloatBuffer channels;
         private final Paint filter = new Paint(Paint.FILTER_BITMAP_FLAG);
         private final RectF bounds = new RectF();
 
@@ -156,6 +165,7 @@ final class MangoModels implements AutoCloseable {
             canvas = new Canvas(bitmap);
             pixels = new int[size * size];
             bytes = ByteBuffer.allocateDirect(pixels.length * 3 * Float.BYTES).order(ByteOrder.nativeOrder());
+            channels = bytes.asFloatBuffer();
         }
 
         Input prepare(Bitmap photo, boolean crop) {
@@ -169,11 +179,11 @@ final class MangoModels implements AutoCloseable {
             canvas.drawColor(0xff727272);
             canvas.drawBitmap(photo, null, bounds, filter);
             bitmap.getPixels(pixels, 0, size, 0, 0, size, size);
-            bytes.clear();
+            channels.clear();
             for (int pixel : pixels) {
-                bytes.putFloat(((pixel >> 16) & 0xff) / 255f);
-                bytes.putFloat(((pixel >> 8) & 0xff) / 255f);
-                bytes.putFloat((pixel & 0xff) / 255f);
+                channels.put(RGB_VALUES[(pixel >> 16) & 0xff]);
+                channels.put(RGB_VALUES[(pixel >> 8) & 0xff]);
+                channels.put(RGB_VALUES[pixel & 0xff]);
             }
             bytes.rewind();
             return new Input(left, top, width, height);

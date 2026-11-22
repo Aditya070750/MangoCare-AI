@@ -55,6 +55,7 @@ import java.util.List;
 import java.util.Locale;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 public final class MainActivity extends ComponentActivity {
     private static final int LIMIT = 12;
@@ -549,6 +550,8 @@ public final class MainActivity extends ComponentActivity {
         boolean detect = detection;
         float cutoff = confidence / 100f;
         List<Photo> batch = new ArrayList<>(photos);
+        int previewIndex = selected;
+        Bitmap previewBitmap = photoBitmap;
         clearScans();
         renderPhoto();
         showResult(false);
@@ -559,7 +562,7 @@ public final class MainActivity extends ComponentActivity {
                 Scan outcome;
                 Bitmap bitmap = null;
                 try {
-                    bitmap = decode(batch.get(i).uri());
+                    bitmap = i == previewIndex && previewBitmap != null ? previewBitmap : decode(batch.get(i).uri());
                     outcome = detect ? new Scan(models().detect(bitmap, cutoff), Collections.emptyList(), null)
                             : new Scan(Collections.emptyList(), models().classify(bitmap), null);
                     if (token == generation) saveHistory(detect, outcome, bitmap);
@@ -567,7 +570,7 @@ public final class MainActivity extends ComponentActivity {
                     Log.e(TAG, "Photo scan failed", error);
                     outcome = new Scan(Collections.emptyList(), Collections.emptyList(), "Could not scan this photo.");
                 } finally {
-                    if (bitmap != null) bitmap.recycle();
+                    if (bitmap != null && bitmap != previewBitmap) bitmap.recycle();
                 }
                 int index = i;
                 Scan found = outcome;
@@ -619,23 +622,33 @@ public final class MainActivity extends ComponentActivity {
         refreshPhotos();
         setStatus("Starting live camera…");
         int rotation = preview.getDisplay() == null ? android.view.Surface.ROTATION_0 : preview.getDisplay().getRotation();
+        AtomicBoolean pendingPreview = new AtomicBoolean();
         liveCamera.start(rotation, new LiveCamera.Listener() {
             @Override public void onFrame(Bitmap image) {
+                if (!pendingPreview.compareAndSet(false, true)) {
+                    image.recycle();
+                    return;
+                }
                 try {
                     List<MangoModels.Detection> boxes = models().detect(image, confidence / 100f);
                     runOnUiThread(() -> {
-                        if (destroyed || token != generation || !live) {
-                            image.recycle();
-                            return;
+                        try {
+                            if (destroyed || token != generation || !live) {
+                                image.recycle();
+                                return;
+                            }
+                            preview.setImageBitmap(image);
+                            preview.setBoxes(boxes);
+                            placeholder.setVisibility(View.GONE);
+                            String label = boxes.isEmpty() ? "No matches" : boxes.get(0).label();
+                            String summary = "Live · " + label + (boxes.size() > 1 ? " · " + boxes.size() + " regions" : "");
+                            if (!summary.contentEquals(status.getText())) status.setText(summary);
+                        } finally {
+                            pendingPreview.set(false);
                         }
-                        preview.setImageBitmap(image);
-                        preview.setBoxes(boxes);
-                        placeholder.setVisibility(View.GONE);
-                        String label = boxes.isEmpty() ? "No matches" : boxes.get(0).label();
-                        String summary = "Live · " + label + (boxes.size() > 1 ? " · " + boxes.size() + " regions" : "");
-                        if (!summary.contentEquals(status.getText())) status.setText(summary);
                     });
                 } catch (IOException | RuntimeException | LinkageError error) {
+                    pendingPreview.set(false);
                     image.recycle();
                     Log.e(TAG, "Live scan failed", error);
                     runOnUiThread(this::onError);

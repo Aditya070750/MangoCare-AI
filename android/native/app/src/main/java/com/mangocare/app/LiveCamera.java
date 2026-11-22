@@ -62,12 +62,16 @@ final class LiveCamera {
                     private long lastFrame;
 
                     @Override public void analyze(ImageProxy frame) {
-                        try (frame) {
-                            long now = SystemClock.elapsedRealtime();
-                            if (token != generation || now - lastFrame < 180) return;
-                            lastFrame = now;
-                            Bitmap image = frame.toBitmap();
-                            int degrees = frame.getImageInfo().getRotationDegrees();
+                        Bitmap image = null;
+                        try {
+                            int degrees;
+                            try (frame) {
+                                long now = SystemClock.elapsedRealtime();
+                                if (token != generation || now - lastFrame < 180) return;
+                                lastFrame = now;
+                                degrees = frame.getImageInfo().getRotationDegrees();
+                                image = frame.toBitmap();
+                            }
                             if (degrees != 0) {
                                 Matrix rotation = new Matrix();
                                 rotation.postRotate(degrees);
@@ -76,12 +80,17 @@ final class LiveCamera {
                                 if (rotated != image) image.recycle();
                                 image = rotated;
                             }
-                            if (token == generation) listener.onFrame(image);
-                            else image.recycle();
+                            if (token == generation) {
+                                Bitmap ready = image;
+                                image = null;
+                                listener.onFrame(ready);
+                            }
                         } catch (RuntimeException error) {
                             activity.runOnUiThread(() -> {
                                 if (token == generation) listener.onError();
                             });
+                        } finally {
+                            if (image != null) image.recycle();
                         }
                     }
                 });

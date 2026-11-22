@@ -16,4 +16,4 @@ To build from the command line with Gradle installed, run the following from `an
 gradle :app:lintDebug :app:assembleDebug
 ```
 
-The debug APK is written to `app/build/outputs/apk/debug/app-debug.apk`. The MangoCare Android APK workflow publishes the signed debug build as a GitHub Actions artifact for device testing.
+The signed test APKs are written to `app/build/outputs/apk/debug/`. Use the smaller `app-arm64-v8a-debug.apk` on an ARM64 phone and `app-universal-debug.apk` for other Android devices or emulators. Both builds shrink unused code and resources and include the same offline models.
