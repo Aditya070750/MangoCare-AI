@@ -1,6 +1,8 @@
 # MangoCare Android app
 
-MangoCare uses the two bundled LiteRT models on the phone. Choose an image from the gallery or take a picture with the device camera. Detection marks individual regions and classification gives one label for the photo. The app requires Android 9 or newer and works offline once installed.
+MangoCare uses the two bundled LiteRT models on the phone. Add up to 12 gallery or camera photos and tap a photo in the batch to see its result. Detection marks individual regions and can analyze the live camera. Classification gives one label per photo, plus precautions and treatment or routine care. The app requires Android 9 or newer and works offline once installed. Use the theme button to switch between day and night, or Reset to clear the workspace and stop the live camera.
+
+The Android care text comes from the website's `guidance.py`. The app bundles a copy in `app/src/main/res/raw/leaf_care.json` so it is available offline.
 
 ## Build
 

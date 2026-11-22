@@ -30,10 +30,14 @@ final class MangoModels implements AutoCloseable {
     private final List<String> classificationLabels;
     private Interpreter detector;
     private Interpreter classifier;
+    private ModelInput detectionInput;
+    private ModelInput classificationInput;
+    private final float[][][] prediction = new float[1][7][ANCHORS];
+    private final float[][] probabilities = new float[1][2];
 
     record Detection(String label, float confidence, RectF box) {}
     record Score(String label, float confidence) {}
-    private record Input(ByteBuffer values, int left, int top, int width, int height) {}
+    private record Input(int left, int top, int width, int height) {}
 
     MangoModels(AssetManager assets) throws IOException {
         this.assets = assets;
@@ -64,9 +68,12 @@ final class MangoModels implements AutoCloseable {
     }
 
     List<Score> classify(Bitmap photo) throws IOException {
-        if (classifier == null) classifier = open("mangocare_classifier_float32.tflite");
-        float[][] probabilities = new float[1][classificationLabels.size()];
-        classifier.run(prepare(photo, CLASSIFICATION_SIZE, true).values, probabilities);
+        if (classifier == null) {
+            classifier = open("mangocare_classifier_float32.tflite");
+            classificationInput = new ModelInput(CLASSIFICATION_SIZE);
+        }
+        classificationInput.prepare(photo, true);
+        classifier.run(classificationInput.bytes, probabilities);
         List<Score> scores = new ArrayList<>();
         for (int index = 0; index < classificationLabels.size(); index++) {
             scores.add(new Score(classificationLabels.get(index), probabilities[0][index]));
@@ -76,10 +83,12 @@ final class MangoModels implements AutoCloseable {
     }
 
     List<Detection> detect(Bitmap photo, float threshold) throws IOException {
-        if (detector == null) detector = open("mangocare_yolo11n_float32.tflite");
-        Input input = prepare(photo, DETECTION_SIZE, false);
-        float[][][] prediction = new float[1][4 + detectionLabels.size()][ANCHORS];
-        detector.run(input.values, prediction);
+        if (detector == null) {
+            detector = open("mangocare_yolo11n_float32.tflite");
+            detectionInput = new ModelInput(DETECTION_SIZE);
+        }
+        Input input = detectionInput.prepare(photo, false);
+        detector.run(detectionInput.bytes, prediction);
         float[][] values = prediction[0];
         List<Detection> candidates = new ArrayList<>();
         for (int index = 0; index < ANCHORS; index++) {
@@ -132,39 +141,50 @@ final class MangoModels implements AutoCloseable {
         return intersection / (a.width() * a.height() + b.width() * b.height() - intersection);
     }
 
-    private static Input prepare(Bitmap photo, int size, boolean crop) {
-        int reference = crop ? Math.min(photo.getWidth(), photo.getHeight()) : Math.max(photo.getWidth(), photo.getHeight());
-        float scale = (float) size / reference;
-        int width = crop ? (int) (photo.getWidth() * scale) : Math.round(photo.getWidth() * scale);
-        int height = crop ? (int) (photo.getHeight() * scale) : Math.round(photo.getHeight() * scale);
-        width = Math.max(1, width);
-        height = Math.max(1, height);
-        if (crop) {
-            width = Math.max(size, width);
-            height = Math.max(size, height);
+    private static final class ModelInput {
+        private final int size;
+        private final Bitmap bitmap;
+        private final Canvas canvas;
+        private final int[] pixels;
+        private final ByteBuffer bytes;
+        private final Paint filter = new Paint(Paint.FILTER_BITMAP_FLAG);
+        private final RectF bounds = new RectF();
+
+        ModelInput(int size) {
+            this.size = size;
+            bitmap = Bitmap.createBitmap(size, size, Bitmap.Config.ARGB_8888);
+            canvas = new Canvas(bitmap);
+            pixels = new int[size * size];
+            bytes = ByteBuffer.allocateDirect(pixels.length * 3 * Float.BYTES).order(ByteOrder.nativeOrder());
         }
-        int left = crop ? -(int) Math.rint((width - size) / 2.0) : (size - width) / 2;
-        int top = crop ? -(int) Math.rint((height - size) / 2.0) : (size - height) / 2;
-        Bitmap input = Bitmap.createBitmap(size, size, Bitmap.Config.ARGB_8888);
-        Canvas canvas = new Canvas(input);
-        canvas.drawColor(0xff727272);
-        canvas.drawBitmap(photo, null, new RectF(left, top, left + width, top + height), new Paint(Paint.FILTER_BITMAP_FLAG));
-        int[] pixels = new int[size * size];
-        input.getPixels(pixels, 0, size, 0, 0, size, size);
-        input.recycle();
-        ByteBuffer bytes = ByteBuffer.allocateDirect(pixels.length * 3 * Float.BYTES).order(ByteOrder.nativeOrder());
-        for (int pixel : pixels) {
-            bytes.putFloat(((pixel >> 16) & 0xff) / 255f);
-            bytes.putFloat(((pixel >> 8) & 0xff) / 255f);
-            bytes.putFloat((pixel & 0xff) / 255f);
+
+        Input prepare(Bitmap photo, boolean crop) {
+            int reference = crop ? Math.min(photo.getWidth(), photo.getHeight()) : Math.max(photo.getWidth(), photo.getHeight());
+            float scale = (float) size / reference;
+            int width = crop ? Math.max(size, (int) (photo.getWidth() * scale)) : Math.max(1, Math.round(photo.getWidth() * scale));
+            int height = crop ? Math.max(size, (int) (photo.getHeight() * scale)) : Math.max(1, Math.round(photo.getHeight() * scale));
+            int left = crop ? -(int) Math.rint((width - size) / 2.0) : (size - width) / 2;
+            int top = crop ? -(int) Math.rint((height - size) / 2.0) : (size - height) / 2;
+            bounds.set(left, top, left + width, top + height);
+            canvas.drawColor(0xff727272);
+            canvas.drawBitmap(photo, null, bounds, filter);
+            bitmap.getPixels(pixels, 0, size, 0, 0, size, size);
+            bytes.clear();
+            for (int pixel : pixels) {
+                bytes.putFloat(((pixel >> 16) & 0xff) / 255f);
+                bytes.putFloat(((pixel >> 8) & 0xff) / 255f);
+                bytes.putFloat((pixel & 0xff) / 255f);
+            }
+            bytes.rewind();
+            return new Input(left, top, width, height);
         }
-        bytes.rewind();
-        return new Input(bytes, left, top, width, height);
     }
 
     @Override
     public void close() {
         if (detector != null) detector.close();
         if (classifier != null) classifier.close();
+        if (detectionInput != null) detectionInput.bitmap.recycle();
+        if (classificationInput != null) classificationInput.bitmap.recycle();
     }
 }

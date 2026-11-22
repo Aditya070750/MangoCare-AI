@@ -1,360 +1,767 @@
 package com.mangocare.app;
 
-import android.app.Activity;
+import android.Manifest;
+import android.animation.ValueAnimator;
 import android.content.ClipData;
 import android.content.Intent;
+import android.content.pm.PackageManager;
+import android.content.res.Configuration;
 import android.graphics.Bitmap;
 import android.graphics.Canvas;
 import android.graphics.Color;
+import android.graphics.ColorSpace;
 import android.graphics.ImageDecoder;
 import android.graphics.Paint;
 import android.graphics.RectF;
 import android.graphics.Typeface;
 import android.graphics.drawable.GradientDrawable;
 import android.net.Uri;
+import android.os.Build;
 import android.os.Bundle;
 import android.provider.MediaStore;
+import android.util.Log;
 import android.view.Gravity;
 import android.view.View;
 import android.widget.Button;
 import android.widget.FrameLayout;
+import android.widget.HorizontalScrollView;
 import android.widget.ImageView;
 import android.widget.LinearLayout;
 import android.widget.ScrollView;
 import android.widget.SeekBar;
 import android.widget.TextView;
 
+import androidx.activity.ComponentActivity;
+import androidx.activity.result.contract.ActivityResultContracts;
+import androidx.core.content.ContextCompat;
 import androidx.core.content.FileProvider;
 import androidx.core.view.ViewCompat;
+import androidx.core.view.WindowCompat;
 import androidx.core.view.WindowInsetsCompat;
 
+import org.json.JSONArray;
+import org.json.JSONObject;
+
+import java.io.BufferedReader;
 import java.io.File;
 import java.io.IOException;
+import java.io.InputStreamReader;
+import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 import java.util.Locale;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
-public final class MainActivity extends Activity {
-    private static final int PICK = 1;
-    private static final int CAMERA = 2;
-    private static final int BACKGROUND = 0xffeff5ea;
-    private static final int INK = 0xff183527;
-    private static final int MUTED = 0xff466052;
-    private static final int GREEN = 0xff1d5b3d;
-    private static final int CARD = 0xfff9fcf7;
+public final class MainActivity extends ComponentActivity {
+    private static final int LIMIT = 12;
+    private static final String TAG = "MangoCare";
+    private record Photo(Uri uri, File cache, String name) {}
+    private record Scan(List<MangoModels.Detection> boxes, List<MangoModels.Score> scores, String error) {}
+    private record Palette(int background, int surface, int soft, int ink, int muted, int green, int onGreen) {}
+    private static final Palette DAY = new Palette(0xffeff5ea, 0xfffbfdf8, 0xffdcebd9, 0xff163525,
+            0xff456252, 0xff1d5b3d, Color.WHITE);
+    private static final Palette NIGHT = new Palette(0xff101b15, 0xff1a2a21, 0xff263e30, 0xffecf5e8,
+            0xffadc5b3, 0xffb2e6a9, 0xff123122);
 
     private final ExecutorService worker = Executors.newSingleThreadExecutor();
+    private final List<Photo> photos = new ArrayList<>();
+    private final List<Scan> scans = new ArrayList<>();
     private MangoModels models;
-    private Uri photoUri;
-    private File cameraFile;
-    private File selectedCameraFile;
-    private Bitmap photo;
-    private Preview preview;
-    private TextView placeholder;
-    private TextView status;
-    private TextView thresholdLabel;
-    private LinearLayout results;
-    private Button gallery;
-    private Button camera;
-    private Button detect;
-    private Button classify;
-    private SeekBar threshold;
+    private LiveCamera liveCamera;
+    private JSONObject careContent;
+    private Palette palette;
+    private boolean night;
+    private boolean detection = true;
+    private boolean live;
     private boolean busy;
     private boolean destroyed;
+    private volatile int generation;
+    private volatile int confidence = 25;
+    private int selected = -1;
+    private volatile int previewVersion;
+    private File pendingPhoto;
+    private Bitmap photoBitmap;
+    private String message;
+
+    private LinearLayout queue;
+    private HorizontalScrollView queueScroll;
+    private LinearLayout result;
+    private View placeholder;
+    private BoxPreview preview;
+    private TextView empty;
+    private TextView count;
+    private TextView status;
+    private TextView thresholdText;
+    private SeekBar threshold;
+    private Button gallery;
+    private Button camera;
+    private Button detectMode;
+    private Button classifyMode;
+    private Button liveButton;
+    private Button run;
+    private Button reset;
+    private Button theme;
+
+    private final androidx.activity.result.ActivityResultLauncher<Intent> galleryPicker =
+            registerForActivityResult(new ActivityResultContracts.StartActivityForResult(), reply -> {
+                if (reply.getResultCode() != RESULT_OK || reply.getData() == null) return;
+                Intent data = reply.getData();
+                ClipData selection = data.getClipData();
+                if (selection != null) {
+                    for (int index = 0; index < selection.getItemCount() && photos.size() < LIMIT; index++) {
+                        addPhoto(selection.getItemAt(index).getUri(), null);
+                    }
+                } else if (photos.size() < LIMIT) {
+                    addPhoto(data.getData(), null);
+                }
+                refreshPhotos();
+                if (photos.size() == LIMIT) setStatus("Photo limit reached. Reset to start a new batch.");
+            });
+
+    private final androidx.activity.result.ActivityResultLauncher<Intent> photoCapture =
+            registerForActivityResult(new ActivityResultContracts.StartActivityForResult(), reply -> {
+                File file = pendingPhoto;
+                pendingPhoto = null;
+                if (file == null) return;
+                if (reply.getResultCode() == RESULT_OK && photos.size() < LIMIT) {
+                    addPhoto(photoUri(file), file);
+                    refreshPhotos();
+                    selectPhoto(photos.size() - 1, false);
+                } else {
+                    delete(file);
+                }
+            });
+
+    private final androidx.activity.result.ActivityResultLauncher<String> cameraPermissionForLive =
+            registerForActivityResult(new ActivityResultContracts.RequestPermission(), granted -> {
+                if (granted && detection && !busy) startLive();
+                else if (!granted) setStatus("Allow camera access to use live detection.");
+            });
+
+    private final androidx.activity.result.ActivityResultLauncher<String> cameraPermissionForPhoto =
+            registerForActivityResult(new ActivityResultContracts.RequestPermission(), granted -> {
+                if (granted && !busy && !live) takePhoto();
+                else if (!granted) setStatus("Allow camera access to take a photo, or choose one from the gallery.");
+            });
 
     @Override
-    public void onCreate(Bundle state) {
+    protected void onCreate(Bundle state) {
         super.onCreate(state);
-        showScreen();
+        WindowCompat.setDecorFitsSystemWindows(getWindow(), false);
+        boolean systemNight = (getResources().getConfiguration().uiMode & Configuration.UI_MODE_NIGHT_MASK)
+                == Configuration.UI_MODE_NIGHT_YES;
+        night = getPreferences(MODE_PRIVATE).getBoolean("night", systemNight);
+        liveCamera = new LiveCamera(this, worker);
+        careContent = readCare();
         if (state != null) {
-            String pending = state.getString("pendingCamera");
-            if (pending != null) cameraFile = new File(pending);
-            String selected = state.getString("selectedCamera");
-            if (selected != null) selectedCameraFile = new File(selected);
-            threshold.setProgress(state.getInt("threshold", 24));
-            String uri = state.getString("photo");
-            if (uri != null) loadPhoto(Uri.parse(uri), selectedCameraFile);
+            detection = state.getBoolean("detection", true);
+            confidence = state.getInt("confidence", 25);
+            String pending = state.getString("pendingPhoto");
+            if (pending != null) pendingPhoto = new File(pending);
+            ArrayList<String> uris = state.getStringArrayList("photos");
+            ArrayList<String> files = state.getStringArrayList("files");
+            if (uris != null && files != null && uris.size() == files.size()) {
+                for (int i = 0; i < uris.size(); i++) {
+                    addPhoto(Uri.parse(uris.get(i)), files.get(i).isEmpty() ? null : new File(files.get(i)));
+                }
+            }
+            selected = Math.min(state.getInt("selected", -1), photos.size() - 1);
         }
+        showScreen();
+        if (!photos.isEmpty()) selectPhoto(Math.max(0, selected), false);
     }
 
     @Override
     protected void onSaveInstanceState(Bundle state) {
         super.onSaveInstanceState(state);
-        if (cameraFile != null) state.putString("pendingCamera", cameraFile.getAbsolutePath());
-        if (selectedCameraFile != null) state.putString("selectedCamera", selectedCameraFile.getAbsolutePath());
-        if (photoUri != null) state.putString("photo", photoUri.toString());
-        state.putInt("threshold", threshold.getProgress());
+        state.putBoolean("detection", detection);
+        state.putInt("confidence", confidence);
+        state.putInt("selected", selected);
+        if (pendingPhoto != null) state.putString("pendingPhoto", pendingPhoto.getAbsolutePath());
+        ArrayList<String> uris = new ArrayList<>();
+        ArrayList<String> files = new ArrayList<>();
+        for (Photo photo : photos) {
+            uris.add(photo.uri().toString());
+            files.add(photo.cache() == null ? "" : photo.cache().getAbsolutePath());
+        }
+        state.putStringArrayList("photos", uris);
+        state.putStringArrayList("files", files);
     }
 
     private void showScreen() {
+        palette = night ? NIGHT : DAY;
+        tintLegacySystemBars();
+        var systemBars = WindowCompat.getInsetsController(getWindow(), getWindow().getDecorView());
+        systemBars.setAppearanceLightStatusBars(!night);
+        systemBars.setAppearanceLightNavigationBars(!night);
         ScrollView scroll = new ScrollView(this);
         scroll.setFillViewport(true);
-        scroll.setBackgroundColor(BACKGROUND);
+        scroll.setBackgroundColor(palette.background);
         ViewCompat.setOnApplyWindowInsetsListener(scroll, (view, insets) -> {
             var bars = insets.getInsets(WindowInsetsCompat.Type.systemBars() | WindowInsetsCompat.Type.displayCutout());
             view.setPadding(bars.left, bars.top, bars.right, bars.bottom);
             return insets;
         });
-
-        LinearLayout content = new LinearLayout(this);
-        content.setOrientation(LinearLayout.VERTICAL);
-        content.setPadding(dp(20), dp(24), dp(20), dp(24));
+        LinearLayout content = column();
+        content.setPadding(dp(18), dp(14), dp(18), dp(22));
         scroll.addView(content);
-        TextView title = text("MangoCare AI", 34, INK);
-        title.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
-        content.addView(title);
-        content.addView(text("Check a mango leaf from a photo.", 16, MUTED));
+        LinearLayout top = row();
+        LinearLayout title = column();
+        title.addView(heading("MangoCare AI", 26));
+        title.addView(text("Mango leaf scanner", 14, palette.muted));
+        top.addView(title, new LinearLayout.LayoutParams(0, -2, 1));
+        theme = button(night ? "Day mode" : "Night mode", false);
+        theme.setOnClickListener(view -> {
+            night = !night;
+            getPreferences(MODE_PRIVATE).edit().putBoolean("night", night).apply();
+            showScreen();
+        });
+        top.addView(theme);
+        content.addView(top);
+
+        LinearLayout mode = row();
+        detectMode = button("Detection", detection);
+        classifyMode = button("Classification", !detection);
+        detectMode.setSelected(detection);
+        classifyMode.setSelected(!detection);
+        detectMode.setOnClickListener(view -> changeMode(true));
+        classifyMode.setOnClickListener(view -> changeMode(false));
+        addPair(mode, detectMode, classifyMode);
+        addBlock(content, mode, 14);
 
         FrameLayout image = new FrameLayout(this);
-        image.setBackground(rounded(0xffdeeadc, 22));
+        image.setBackground(rounded(palette.soft, 22));
         image.setClipToOutline(true);
-        preview = new Preview();
+        preview = new BoxPreview();
         image.addView(preview, new FrameLayout.LayoutParams(-1, -1));
-        placeholder = text("Choose or take a photo", 17, MUTED);
-        placeholder.setGravity(Gravity.CENTER);
-        image.addView(placeholder, new FrameLayout.LayoutParams(-1, -1));
-        LinearLayout.LayoutParams imageParams = new LinearLayout.LayoutParams(-1, dp(258));
-        imageParams.topMargin = dp(20);
+        LinearLayout prompt = column();
+        prompt.setGravity(Gravity.CENTER);
+        MangoLeafView leaf = new MangoLeafView(this);
+        prompt.addView(leaf, new LinearLayout.LayoutParams(dp(116), dp(116)));
+        empty = text("Choose photos or take a picture", 15, palette.ink);
+        empty.setGravity(Gravity.CENTER);
+        prompt.addView(empty);
+        image.addView(prompt, new FrameLayout.LayoutParams(-1, -1));
+        placeholder = prompt;
+        LinearLayout.LayoutParams imageParams = new LinearLayout.LayoutParams(-1, dp(250));
+        imageParams.topMargin = dp(12);
         content.addView(image, imageParams);
 
-        gallery = button("Choose photo", false);
+        LinearLayout photoActions = row();
+        gallery = button("Add photos", false);
         camera = button("Take photo", false);
         gallery.setOnClickListener(view -> openGallery());
-        camera.setOnClickListener(view -> openCamera());
-        addPair(content, gallery, camera);
+        camera.setOnClickListener(view -> requestCamera(false));
+        addPair(photoActions, gallery, camera);
+        addBlock(content, photoActions, 9);
+        count = text("", 13, palette.muted);
+        addBlock(content, count, 8);
+        queueScroll = new HorizontalScrollView(this);
+        queueScroll.setHorizontalScrollBarEnabled(false);
+        queue = row();
+        queueScroll.addView(queue);
+        addBlock(content, queueScroll, 4);
 
-        LinearLayout tools = new LinearLayout(this);
-        tools.setOrientation(LinearLayout.VERTICAL);
-        tools.setPadding(dp(15), dp(13), dp(15), dp(15));
-        tools.setBackground(rounded(CARD, 18));
-        LinearLayout.LayoutParams toolsParams = new LinearLayout.LayoutParams(-1, -2);
-        toolsParams.topMargin = dp(14);
-        content.addView(tools, toolsParams);
-        thresholdLabel = text("Detection confidence threshold: 25%", 14, MUTED);
-        tools.addView(thresholdLabel);
+        LinearLayout controls = column();
+        controls.setPadding(dp(13), dp(10), dp(13), dp(12));
+        controls.setBackground(rounded(palette.surface, 18));
+        thresholdText = text("Minimum confidence · " + confidence + "%", 14, palette.muted);
+        controls.addView(thresholdText);
         threshold = new SeekBar(this);
-        threshold.setContentDescription("Detection confidence threshold");
+        threshold.setContentDescription("Minimum detection confidence");
         threshold.setMax(98);
-        threshold.setProgress(24);
+        threshold.setProgress(confidence - 1);
+        threshold.setProgressTintList(android.content.res.ColorStateList.valueOf(palette.green));
+        threshold.setThumbTintList(android.content.res.ColorStateList.valueOf(palette.green));
         threshold.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
             @Override public void onProgressChanged(SeekBar bar, int value, boolean fromUser) {
-                thresholdLabel.setText("Detection confidence threshold: " + (value + 1) + "%");
+                confidence = value + 1;
+                thresholdText.setText("Minimum confidence · " + confidence + "%");
+                if (reset != null) enable(reset, busy || live || !photos.isEmpty() || confidence != 25);
             }
             @Override public void onStartTrackingTouch(SeekBar bar) {}
             @Override public void onStopTrackingTouch(SeekBar bar) {}
         });
-        tools.addView(threshold);
-        detect = button("Detect regions", true);
-        classify = button("Classify photo", true);
-        detect.setOnClickListener(view -> scan(true));
-        classify.setOnClickListener(view -> scan(false));
-        addPair(tools, detect, classify);
-
-        status = text("Detection draws boxes. Classification labels the whole photo.", 14, MUTED);
+        controls.addView(threshold);
+        liveButton = button(live ? "Stop live detection" : "Start live detection", false);
+        liveButton.setOnClickListener(view -> {
+            if (live) stopLive(true);
+            else requestCamera(true);
+        });
+        controls.addView(liveButton);
+        LinearLayout runRow = row();
+        run = button(detection ? "Run detection" : "Classify photos", true);
+        run.setOnClickListener(view -> scanPhotos());
+        reset = button("Reset", false);
+        reset.setOnClickListener(view -> reset());
+        addPair(runRow, run, reset);
+        addBlock(controls, runRow, 7);
+        addBlock(content, controls, 9);
+        status = text("", 14, palette.muted);
         status.setAccessibilityLiveRegion(View.ACCESSIBILITY_LIVE_REGION_POLITE);
-        status.setPadding(0, dp(14), 0, dp(8));
-        content.addView(status);
-        results = new LinearLayout(this);
-        results.setOrientation(LinearLayout.VERTICAL);
-        content.addView(results);
+        addBlock(content, status, 11);
+        result = column();
+        addBlock(content, result, 8);
         setContentView(scroll);
-        updateControls();
+        ViewCompat.requestApplyInsets(scroll);
+        renderPhoto();
+        refreshPhotos();
+        showResult(false);
+        setStatus(message != null ? message : modeHint());
+    }
+
+    private String modeHint() {
+        return detection ? "Detection marks possible disease and healthy regions." : "For classification, use one leaf per photo.";
+    }
+
+    private void changeMode(boolean newDetection) {
+        if (detection == newDetection) return;
+        if (live) stopLive(false);
+        detection = newDetection;
+        clearScans();
+        message = modeHint();
+        showScreen();
+        if (selected >= 0 && photoBitmap == null) selectPhoto(selected, false);
     }
 
     private void openGallery() {
-        Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT)
+        Intent picker = new Intent(Intent.ACTION_OPEN_DOCUMENT)
                 .setType("image/*")
-                .addCategory(Intent.CATEGORY_OPENABLE);
+                .addCategory(Intent.CATEGORY_OPENABLE)
+                .putExtra(Intent.EXTRA_ALLOW_MULTIPLE, true);
         try {
-            startActivityForResult(intent, PICK);
+            galleryPicker.launch(picker);
         } catch (RuntimeException error) {
-            status.setText("No photo picker is available on this device.");
+            setStatus("No photo picker is available on this device.");
         }
     }
 
-    private void openCamera() {
+    private void requestCamera(boolean forLive) {
+        if (ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED) {
+            if (forLive) startLive();
+            else takePhoto();
+        } else if (forLive) {
+            cameraPermissionForLive.launch(Manifest.permission.CAMERA);
+        } else {
+            cameraPermissionForPhoto.launch(Manifest.permission.CAMERA);
+        }
+    }
+
+    private void takePhoto() {
         try {
             File directory = new File(getCacheDir(), "camera");
             if (!directory.isDirectory() && !directory.mkdirs()) throw new IOException();
-            cameraFile = File.createTempFile("leaf-", ".jpg", directory);
-            Uri uri = FileProvider.getUriForFile(this, getPackageName() + ".photos", cameraFile);
+            pendingPhoto = File.createTempFile("leaf-", ".jpg", directory);
+            Uri uri = photoUri(pendingPhoto);
             Intent intent = new Intent(MediaStore.ACTION_IMAGE_CAPTURE).putExtra(MediaStore.EXTRA_OUTPUT, uri);
             intent.setClipData(ClipData.newRawUri("Camera photo", uri));
             intent.addFlags(Intent.FLAG_GRANT_WRITE_URI_PERMISSION | Intent.FLAG_GRANT_READ_URI_PERMISSION);
-            startActivityForResult(intent, CAMERA);
+            photoCapture.launch(intent);
         } catch (IOException | RuntimeException error) {
-            delete(cameraFile);
-            cameraFile = null;
-            status.setText("Could not open the camera. You can choose a saved photo.");
+            delete(pendingPhoto);
+            pendingPhoto = null;
+            setStatus("Could not open the camera. Choose a saved photo instead.");
+        }
+    }
+
+    private Uri photoUri(File photo) {
+        return FileProvider.getUriForFile(this, getPackageName() + ".photos", photo);
+    }
+
+    private void addPhoto(Uri uri, File cache) {
+        if (uri == null || photos.stream().anyMatch(photo -> photo.uri().equals(uri))) return;
+        photos.add(new Photo(uri, cache, cache == null ? "Photo " + (photos.size() + 1) : "Camera " + (photos.size() + 1)));
+        scans.add(null);
+    }
+
+    private void refreshPhotos() {
+        if (selected < 0 && !photos.isEmpty()) {
+            selectPhoto(0, false);
+            return;
+        }
+        queue.removeAllViews();
+        count.setVisibility(photos.isEmpty() ? View.GONE : View.VISIBLE);
+        queueScroll.setVisibility(photos.isEmpty() ? View.GONE : View.VISIBLE);
+        count.setText(photos.size() + (photos.size() == 1 ? " photo selected" : " photos selected") + " · limit " + LIMIT);
+        for (int i = 0; i < photos.size(); i++) {
+            int index = i;
+            Button item = button(photos.get(i).name(), i == selected);
+            item.setSelected(i == selected);
+            item.setOnClickListener(view -> selectPhoto(index, true));
+            LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(-2, -2);
+            params.setMarginEnd(dp(6));
+            queue.addView(item, params);
+        }
+        updateControls();
+    }
+
+    private void selectPhoto(int index, boolean userSelected) {
+        if (index < 0 || index >= photos.size() || live) return;
+        if (selected == index && photoBitmap != null) return;
+        selected = index;
+        photoBitmap = null;
+        int version = ++previewVersion;
+        Uri uri = photos.get(index).uri();
+        renderPhoto();
+        showResult(false);
+        refreshPhotos();
+        worker.execute(() -> {
+            if (version != previewVersion) return;
+            Bitmap bitmap = null;
+            try {
+                bitmap = decode(uri);
+            } catch (IOException | RuntimeException error) {
+                Log.w(TAG, "Photo preview failed", error);
+            }
+            Bitmap loaded = bitmap;
+            runOnUiThread(() -> {
+                if (destroyed || version != previewVersion || live) {
+                    if (loaded != null) loaded.recycle();
+                    return;
+                }
+                photoBitmap = loaded;
+                renderPhoto();
+                if (loaded == null && !busy) setStatus("Could not open this photo.");
+                else if (userSelected && !busy) setStatus("Showing " + photos.get(index).name() + ".");
+            });
+        });
+    }
+
+    private Bitmap decode(Uri uri) throws IOException {
+        return ImageDecoder.decodeBitmap(ImageDecoder.createSource(getContentResolver(), uri), (decoder, info, ignored) -> {
+            decoder.setAllocator(ImageDecoder.ALLOCATOR_SOFTWARE);
+            decoder.setTargetColorSpace(ColorSpace.get(ColorSpace.Named.SRGB));
+            int width = info.getSize().getWidth();
+            int height = info.getSize().getHeight();
+            float scale = Math.min(1f, 1600f / Math.max(width, height));
+            decoder.setTargetSize(Math.max(1, Math.round(width * scale)), Math.max(1, Math.round(height * scale)));
+        });
+    }
+
+    private MangoModels models() throws IOException {
+        if (models == null) models = new MangoModels(getAssets());
+        return models;
+    }
+
+    private void scanPhotos() {
+        if (photos.isEmpty() || busy || live) return;
+        busy = true;
+        int token = ++generation;
+        boolean detect = detection;
+        float cutoff = confidence / 100f;
+        List<Photo> batch = new ArrayList<>(photos);
+        clearScans();
+        renderPhoto();
+        showResult(false);
+        setStatus("Scanning " + batch.size() + (batch.size() == 1 ? " photo…" : " photos…"));
+        updateControls();
+        worker.execute(() -> {
+            for (int i = 0; i < batch.size() && token == generation; i++) {
+                Scan outcome;
+                Bitmap bitmap = null;
+                try {
+                    bitmap = decode(batch.get(i).uri());
+                    outcome = detect ? new Scan(models().detect(bitmap, cutoff), Collections.emptyList(), null)
+                            : new Scan(Collections.emptyList(), models().classify(bitmap), null);
+                } catch (IOException | RuntimeException | LinkageError error) {
+                    Log.e(TAG, "Photo scan failed", error);
+                    outcome = new Scan(Collections.emptyList(), Collections.emptyList(), "Could not scan this photo.");
+                } finally {
+                    if (bitmap != null) bitmap.recycle();
+                }
+                int index = i;
+                Scan found = outcome;
+                runOnUiThread(() -> finishScan(token, index, batch.size(), found));
+            }
+        });
+    }
+
+    private void finishScan(int token, int index, int size, Scan scan) {
+        if (destroyed || token != generation) return;
+        scans.set(index, scan);
+        if (index == selected) {
+            renderPhoto();
+            showResult(true);
+        }
+        if (index + 1 == size) {
+            busy = false;
+            setStatus(size == 1 ? "Scan complete." : "Finished " + size + " scans. Select a photo to see its result.");
+            updateControls();
+        } else {
+            setStatus("Scanned " + (index + 1) + " of " + size + " photos.");
+        }
+    }
+
+    private void startLive() {
+        if (live || busy || !detection) return;
+        int token = ++generation;
+        previewVersion++;
+        live = true;
+        photoBitmap = null;
+        renderPhoto();
+        showResult(false);
+        refreshPhotos();
+        setStatus("Starting live camera…");
+        int rotation = preview.getDisplay() == null ? android.view.Surface.ROTATION_0 : preview.getDisplay().getRotation();
+        liveCamera.start(rotation, new LiveCamera.Listener() {
+            @Override public void onFrame(Bitmap image) {
+                try {
+                    List<MangoModels.Detection> boxes = models().detect(image, confidence / 100f);
+                    runOnUiThread(() -> {
+                        if (destroyed || token != generation || !live) {
+                            image.recycle();
+                            return;
+                        }
+                        preview.setImageBitmap(image);
+                        preview.setBoxes(boxes);
+                        placeholder.setVisibility(View.GONE);
+                        String label = boxes.isEmpty() ? "No matches" : boxes.get(0).label();
+                        String summary = "Live · " + label + (boxes.size() > 1 ? " · " + boxes.size() + " regions" : "");
+                        if (!summary.contentEquals(status.getText())) status.setText(summary);
+                    });
+                } catch (IOException | RuntimeException | LinkageError error) {
+                    image.recycle();
+                    Log.e(TAG, "Live scan failed", error);
+                    runOnUiThread(this::onError);
+                }
+            }
+
+            @Override public void onError() {
+                if (!destroyed && token == generation && live) {
+                    stopLive(true);
+                    setStatus("Live detection could not start. Try a photo scan instead.");
+                }
+            }
+        });
+    }
+
+    private void stopLive(boolean restore) {
+        if (!live) return;
+        generation++;
+        live = false;
+        liveCamera.stop();
+        renderPhoto();
+        if (restore) {
+            setStatus("Live detection stopped.");
+            if (selected >= 0) selectPhoto(selected, false);
+            else refreshPhotos();
+        }
+    }
+
+    private void reset() {
+        stopLive(false);
+        generation++;
+        previewVersion++;
+        busy = false;
+        selected = -1;
+        photoBitmap = null;
+        for (Photo photo : photos) delete(photo.cache());
+        photos.clear();
+        scans.clear();
+        threshold.setProgress(24);
+        renderPhoto();
+        showResult(false);
+        refreshPhotos();
+        setStatus(modeHint());
+    }
+
+    private void clearScans() {
+        for (int i = 0; i < scans.size(); i++) scans.set(i, null);
+    }
+
+    private void renderPhoto() {
+        preview.setImageBitmap(photoBitmap);
+        placeholder.setVisibility(photoBitmap == null ? View.VISIBLE : View.GONE);
+        empty.setText(live ? "Starting live camera…" : selected >= 0 ? "Opening photo…" : "Choose photos or take a picture");
+        Scan scan = selected >= 0 && !live ? scans.get(selected) : null;
+        preview.setBoxes(scan == null ? Collections.emptyList() : scan.boxes());
+    }
+
+    private void showResult(boolean animate) {
+        result.removeAllViews();
+        if (live || selected < 0 || scans.get(selected) == null) return;
+        Scan scan = scans.get(selected);
+        LinearLayout card = column();
+        card.setBackground(rounded(palette.surface, 18));
+        card.setPadding(dp(14), dp(12), dp(14), dp(14));
+        result.addView(card);
+        if (scan.error() != null) {
+            card.addView(text(scan.error(), 15, palette.ink));
+        } else if (detection) {
+            int size = scan.boxes().size();
+            card.addView(heading(size == 0 ? "No matches" : size + (size == 1 ? " region detected" : " regions detected"), 18));
+            if (size == 0) card.addView(text("Try a clearer photo or lower the confidence threshold.", 14, palette.muted));
+            for (MangoModels.Detection item : scan.boxes()) addScore(card, item.label(), item.confidence());
+        } else {
+            String label = scan.scores().get(0).label();
+            card.addView(heading("Prediction · " + label, 18));
+            for (MangoModels.Score score : scan.scores()) addScore(card, score.label(), score.confidence());
+            addCare(card, label);
+        }
+        if (animate && ValueAnimator.areAnimatorsEnabled()) {
+            card.setCameraDistance(dp(1000));
+            card.setRotationX(-9);
+            card.setAlpha(0.7f);
+            card.animate().rotationX(0).alpha(1).setDuration(230).start();
+        }
+    }
+
+    private void addScore(LinearLayout card, String label, float score) {
+        TextView row = text(label + "   " + percent(score), 15, palette.ink);
+        row.setPadding(0, dp(6), 0, 0);
+        card.addView(row);
+    }
+
+    private JSONObject readCare() {
+        try (BufferedReader reader = new BufferedReader(new InputStreamReader(
+                getResources().openRawResource(R.raw.leaf_care), StandardCharsets.UTF_8))) {
+            StringBuilder json = new StringBuilder();
+            String line;
+            while ((line = reader.readLine()) != null) json.append(line);
+            return new JSONObject(json.toString());
+        } catch (Exception error) {
+            Log.e(TAG, "Could not load care guidance", error);
+            return new JSONObject();
+        }
+    }
+
+    private void addCare(LinearLayout card, String label) {
+        JSONObject care = careContent.optJSONObject("care");
+        JSONObject guidance = care == null ? null : care.optJSONObject(label);
+        if (guidance == null) return;
+        addBlock(card, text(guidance.optString("description"), 14, palette.muted), 9);
+        displayTips(card, guidance, "Precautions", "Precautions");
+        boolean healthy = label.equals("Healthy");
+        displayTips(card, guidance, healthy ? "Care" : "Treatment", healthy ? "Routine care" : "Treatment");
+        addBlock(card, text(careContent.optString("note"), 13, palette.muted), 10);
+        TextView source = text("Read the UF/IFAS mango care guide", 14, palette.green);
+        source.setPadding(0, dp(8), 0, dp(8));
+        source.setPaintFlags(source.getPaintFlags() | Paint.UNDERLINE_TEXT_FLAG);
+        source.setOnClickListener(view -> {
+            try {
+                startActivity(new Intent(Intent.ACTION_VIEW, Uri.parse(careContent.optString("source"))));
+            } catch (RuntimeException error) {
+                setStatus("No browser is available to open the care guide.");
+            }
+        });
+        card.addView(source);
+    }
+
+    private void displayTips(LinearLayout card, JSONObject guidance, String key, String title) {
+        JSONArray items = guidance.optJSONArray(key);
+        if (items == null) return;
+        addBlock(card, heading(title, 15), 10);
+        for (int i = 0; i < items.length(); i++) addBlock(card, text("• " + items.optString(i), 14, palette.ink), 3);
+    }
+
+    private void updateControls() {
+        enable(gallery, !busy && !live && photos.size() < LIMIT);
+        enable(camera, !busy && !live && photos.size() < LIMIT);
+        enable(detectMode, !busy);
+        enable(classifyMode, !busy);
+        enable(run, !busy && !live && !photos.isEmpty());
+        enable(reset, busy || live || !photos.isEmpty() || confidence != 25);
+        for (int i = 0; i < queue.getChildCount(); i++) enable((Button) queue.getChildAt(i), !live && !busy);
+        threshold.setVisibility(detection ? View.VISIBLE : View.GONE);
+        thresholdText.setVisibility(detection ? View.VISIBLE : View.GONE);
+        threshold.setEnabled(!busy);
+        liveButton.setVisibility(detection ? View.VISIBLE : View.GONE);
+        liveButton.setText(live ? "Stop live detection" : "Start live detection");
+        enable(liveButton, !busy);
+    }
+
+    private void setStatus(String value) {
+        message = value;
+        status.setText(value);
+    }
+
+    @SuppressWarnings("deprecation")
+    private void tintLegacySystemBars() {
+        if (Build.VERSION.SDK_INT < 35) {
+            getWindow().setStatusBarColor(Color.TRANSPARENT);
+            getWindow().setNavigationBarColor(palette.background);
         }
     }
 
     @Override
-    protected void onActivityResult(int request, int result, Intent data) {
-        super.onActivityResult(request, result, data);
-        if (request == PICK && result == RESULT_OK && data != null && data.getData() != null) {
-            Uri uri = data.getData();
-            loadPhoto(uri, null);
-        }
-        if (request == CAMERA && cameraFile != null) {
-            File captured = cameraFile;
-            cameraFile = null;
-            if (result == RESULT_OK) {
-                loadPhoto(FileProvider.getUriForFile(this, getPackageName() + ".photos", captured), captured);
-            } else {
-                delete(captured);
-            }
-        }
-    }
-
-    private void loadPhoto(Uri uri, File newCameraFile) {
-        status.setText("Opening photo…");
-        busy = true;
-        updateControls();
-        worker.execute(() -> {
-            try {
-                ImageDecoder.Source source = ImageDecoder.createSource(getContentResolver(), uri);
-                Bitmap bitmap = ImageDecoder.decodeBitmap(source, (decoder, info, ignored) -> {
-                    decoder.setAllocator(ImageDecoder.ALLOCATOR_SOFTWARE);
-                    int width = info.getSize().getWidth();
-                    int height = info.getSize().getHeight();
-                    float scale = Math.min(1f, 1600f / Math.max(width, height));
-                    decoder.setTargetSize(Math.max(1, Math.round(width * scale)), Math.max(1, Math.round(height * scale)));
-                });
-                runOnUiThread(() -> {
-                    if (destroyed) return;
-                    if (selectedCameraFile != null && !selectedCameraFile.equals(newCameraFile)) delete(selectedCameraFile);
-                    selectedCameraFile = newCameraFile;
-                    photoUri = uri;
-                    photo = bitmap;
-                    preview.setImageBitmap(bitmap);
-                    preview.setBoxes(Collections.emptyList());
-                    placeholder.setVisibility(View.GONE);
-                    results.removeAllViews();
-                    finishWork("Photo ready. Choose a scan.");
-                });
-            } catch (IOException | RuntimeException error) {
-                if (newCameraFile != null && !newCameraFile.equals(selectedCameraFile)) delete(newCameraFile);
-                runOnUiThread(() -> finishWork("Could not open this image. Choose another photo."));
-            }
-        });
-    }
-
-    private void scan(boolean detection) {
-        if (photo == null || busy) return;
-        Bitmap input = photo;
-        float confidence = (threshold.getProgress() + 1) / 100f;
-        busy = true;
-        results.removeAllViews();
-        preview.setBoxes(Collections.emptyList());
-        status.setText(detection ? "Looking for regions…" : "Classifying photo…");
-        updateControls();
-        worker.execute(() -> {
-            try {
-                if (models == null) models = new MangoModels(getAssets());
-                if (detection) {
-                    List<MangoModels.Detection> found = models.detect(input, confidence);
-                    runOnUiThread(() -> showDetections(found));
-                } else {
-                    List<MangoModels.Score> scores = models.classify(input);
-                    runOnUiThread(() -> showScores(scores));
-                }
-            } catch (IOException | RuntimeException | LinkageError error) {
-                android.util.Log.e("MangoCare", "Model inference failed", error);
-                runOnUiThread(() -> finishWork("The scan could not finish. Try again with a different photo."));
-            }
-        });
-    }
-
-    private void showDetections(List<MangoModels.Detection> found) {
-        if (destroyed) return;
-        preview.setBoxes(found);
-        if (found.isEmpty()) {
-            finishWork("No matches at this threshold. Try a clearer photo or lower the threshold.");
-            return;
-        }
-        finishWork(found.size() + (found.size() == 1 ? " region detected." : " regions detected."));
-        for (MangoModels.Detection item : found) addResult(item.label(), item.confidence());
-    }
-
-    private void showScores(List<MangoModels.Score> scores) {
-        if (destroyed) return;
-        finishWork("Prediction: " + scores.get(0).label() + ". Use one leaf per photo.");
-        for (MangoModels.Score score : scores) addResult(score.label(), score.confidence());
-    }
-
-    private void addResult(String label, float confidence) {
-        TextView row = text(label + "   " + percent(confidence), 16, INK);
-        row.setBackground(rounded(CARD, 12));
-        row.setPadding(dp(13), dp(10), dp(13), dp(10));
-        LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(-1, -2);
-        params.topMargin = dp(5);
-        results.addView(row, params);
-    }
-
-    private void finishWork(String message) {
-        if (destroyed) return;
-        busy = false;
-        status.setText(message);
-        updateControls();
-    }
-
-    private void updateControls() {
-        gallery.setEnabled(!busy);
-        camera.setEnabled(!busy);
-        threshold.setEnabled(!busy);
-        boolean canScan = !busy && photo != null;
-        detect.setEnabled(canScan);
-        classify.setEnabled(canScan);
-        detect.setAlpha(canScan ? 1f : 0.45f);
-        classify.setAlpha(canScan ? 1f : 0.45f);
+    protected void onStop() {
+        super.onStop();
+        if (live) stopLive(true);
     }
 
     @Override
     protected void onDestroy() {
         destroyed = true;
+        generation++;
+        previewVersion++;
+        liveCamera.stop();
         worker.execute(() -> { if (models != null) models.close(); });
         worker.shutdown();
         if (isFinishing()) {
-            delete(cameraFile);
-            delete(selectedCameraFile);
+            delete(pendingPhoto);
+            for (Photo photo : photos) delete(photo.cache());
         }
         super.onDestroy();
     }
 
-    private void addPair(LinearLayout content, Button first, Button second) {
-        LinearLayout row = new LinearLayout(this);
-        LinearLayout.LayoutParams firstParams = new LinearLayout.LayoutParams(0, -2, 1);
-        firstParams.setMarginEnd(dp(8));
-        row.addView(first, firstParams);
-        row.addView(second, new LinearLayout.LayoutParams(0, -2, 1));
-        LinearLayout.LayoutParams rowParams = new LinearLayout.LayoutParams(-1, -2);
-        rowParams.topMargin = dp(9);
-        content.addView(row, rowParams);
+    private void enable(Button button, boolean enabled) {
+        button.setEnabled(enabled);
+        button.setAlpha(enabled ? 1f : 0.45f);
     }
 
-    private Button button(String value, boolean primary) {
-        Button button = new Button(this);
-        button.setAllCaps(false);
-        button.setText(value);
-        button.setTextSize(14);
-        button.setTextColor(primary ? Color.WHITE : INK);
-        button.setBackground(new android.graphics.drawable.RippleDrawable(
-                android.content.res.ColorStateList.valueOf(primary ? 0x33ffffff : 0x221d5b3d),
-                rounded(primary ? GREEN : 0xffe1eede, 14), null));
-        button.setMinHeight(dp(48));
-        button.setPadding(dp(7), dp(6), dp(7), dp(6));
-        return button;
+    private Button button(String label, boolean active) {
+        Button view = new Button(this);
+        view.setAllCaps(false);
+        view.setText(label);
+        view.setTextSize(14);
+        view.setTextColor(active ? palette.onGreen : palette.ink);
+        view.setBackground(new android.graphics.drawable.RippleDrawable(
+                android.content.res.ColorStateList.valueOf(active ? 0x33ffffff : 0x271d5b3d),
+                rounded(active ? palette.green : palette.soft, 14), null));
+        view.setMinHeight(dp(46));
+        view.setPadding(dp(9), dp(6), dp(9), dp(6));
+        return view;
+    }
+
+    private LinearLayout column() {
+        LinearLayout view = new LinearLayout(this);
+        view.setOrientation(LinearLayout.VERTICAL);
+        return view;
+    }
+
+    private LinearLayout row() {
+        LinearLayout view = new LinearLayout(this);
+        view.setGravity(Gravity.CENTER_VERTICAL);
+        return view;
+    }
+
+    private void addPair(LinearLayout row, View first, View second) {
+        LinearLayout.LayoutParams left = new LinearLayout.LayoutParams(0, -2, 1);
+        left.setMarginEnd(dp(8));
+        row.addView(first, left);
+        row.addView(second, new LinearLayout.LayoutParams(0, -2, 1));
+    }
+
+    private void addBlock(LinearLayout parent, View child, int margin) {
+        LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(-1, -2);
+        params.topMargin = dp(margin);
+        parent.addView(child, params);
+    }
+
+    private TextView heading(String value, int size) {
+        TextView view = text(value, size, palette.ink);
+        view.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
+        return view;
     }
 
     private TextView text(String value, int size, int color) {
-        TextView text = new TextView(this);
-        text.setText(value);
-        text.setTextSize(size);
-        text.setTextColor(color);
-        return text;
+        TextView view = new TextView(this);
+        view.setText(value);
+        view.setTextSize(size);
+        view.setTextColor(color);
+        return view;
     }
 
     private GradientDrawable rounded(int color, int radius) {
@@ -373,23 +780,22 @@ public final class MainActivity extends Activity {
     }
 
     private static void delete(File file) {
-        if (file != null && file.exists() && !file.delete()) {
-            android.util.Log.w("MangoCare", "Could not remove temporary camera photo.");
-        }
+        if (file != null && file.exists() && !file.delete()) Log.w(TAG, "Could not remove cached photo.");
     }
 
-    private final class Preview extends ImageView {
+    private final class BoxPreview extends ImageView {
         private final Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG);
+        private final RectF bounds = new RectF();
         private List<MangoModels.Detection> boxes = Collections.emptyList();
 
-        Preview() {
+        BoxPreview() {
             super(MainActivity.this);
-            setContentDescription("Selected mango leaf photo");
+            setContentDescription("Mango leaf preview");
             setScaleType(ScaleType.FIT_CENTER);
         }
 
-        void setBoxes(List<MangoModels.Detection> boxes) {
-            this.boxes = boxes;
+        void setBoxes(List<MangoModels.Detection> found) {
+            boxes = found;
             invalidate();
         }
 
@@ -397,7 +803,7 @@ public final class MainActivity extends Activity {
         protected void onDraw(Canvas canvas) {
             super.onDraw(canvas);
             if (getDrawable() == null || boxes.isEmpty()) return;
-            RectF bounds = new RectF(getDrawable().getBounds());
+            bounds.set(getDrawable().getBounds());
             getImageMatrix().mapRect(bounds);
             paint.setTypeface(Typeface.DEFAULT_BOLD);
             paint.setTextSize(dp(11));
@@ -422,7 +828,7 @@ public final class MainActivity extends Activity {
                 canvas.drawRect(left, top, right, bottom, paint);
                 paint.setStyle(Paint.Style.FILL);
                 canvas.drawRect(tagX, tagY, tagX + tagWidth, tagY + dp(18), paint);
-                paint.setColor(INK);
+                paint.setColor(0xff163525);
                 canvas.drawText(label, tagX + dp(4), tagY + dp(13), paint);
             }
         }
