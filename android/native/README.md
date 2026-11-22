@@ -16,4 +16,4 @@ To build from the command line with Gradle installed, run the following from `an
 gradle :app:lintDebug :app:assembleDebug
 ```
 
-The signed test APKs are written to `app/build/outputs/apk/debug/`. Use the smaller `app-arm64-v8a-debug.apk` on an ARM64 phone and `app-universal-debug.apk` for other Android devices or emulators. Both builds shrink unused code and resources and include the same offline models.
+The signed test APK is written to `app/build/outputs/apk/debug/app-debug.apk`. The universal APK packages the runtime for ARM64, ARM, x86 and x86-64, and uses the original float32 offline models. Live mode uses a CameraX preview stream alongside model inference.

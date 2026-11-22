@@ -65,7 +65,8 @@ final class MangoModels implements AutoCloseable {
         AssetFileDescriptor asset = assets.openFd(name);
         try (FileInputStream stream = asset.createInputStream()) {
             ByteBuffer model = stream.getChannel().map(FileChannel.MapMode.READ_ONLY, asset.getStartOffset(), asset.getLength());
-            return new Interpreter(model, new Interpreter.Options().setNumThreads(2));
+            int threads = Math.min(4, Math.max(1, Runtime.getRuntime().availableProcessors() / 2));
+            return new Interpreter(model, new Interpreter.Options().setNumThreads(threads));
         }
     }
 
@@ -100,11 +101,12 @@ final class MangoModels implements AutoCloseable {
             }
             float score = values[4 + best][index];
             if (!(score > threshold)) continue;
-            float halfWidth = values[2][index] * DETECTION_SIZE / 2;
-            float halfHeight = values[3][index] * DETECTION_SIZE / 2;
+            // This export's xywh channels are already in 640×640 input pixels.
+            float halfWidth = values[2][index] / 2;
+            float halfHeight = values[3][index] / 2;
             if (!(halfWidth > 0 && halfHeight > 0)) continue;
-            float x = values[0][index] * DETECTION_SIZE;
-            float y = values[1][index] * DETECTION_SIZE;
+            float x = values[0][index];
+            float y = values[1][index];
             candidates.add(new Detection(detectionLabels.get(best), score,
                     new RectF(x - halfWidth, y - halfHeight, x + halfWidth, y + halfHeight)));
         }

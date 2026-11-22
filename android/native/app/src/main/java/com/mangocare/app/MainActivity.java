@@ -34,6 +34,11 @@ import android.widget.TextView;
 import androidx.activity.ComponentActivity;
 import androidx.activity.OnBackPressedCallback;
 import androidx.activity.result.contract.ActivityResultContracts;
+import androidx.annotation.OptIn;
+import androidx.camera.view.PreviewView;
+import androidx.camera.view.TransformExperimental;
+import androidx.camera.view.transform.CoordinateTransform;
+import androidx.camera.view.transform.OutputTransform;
 import androidx.core.content.ContextCompat;
 import androidx.core.content.FileProvider;
 import androidx.core.view.ViewCompat;
@@ -57,6 +62,7 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.atomic.AtomicBoolean;
 
+@OptIn(markerClass = TransformExperimental.class)
 public final class MainActivity extends ComponentActivity {
     private static final int LIMIT = 12;
     private static final String TAG = "MangoCare";
@@ -96,6 +102,7 @@ public final class MainActivity extends ComponentActivity {
     private LinearLayout historyList;
     private View placeholder;
     private BoxPreview preview;
+    private PreviewView cameraPreview;
     private TextView empty;
     private TextView count;
     private TextView status;
@@ -231,6 +238,7 @@ public final class MainActivity extends ComponentActivity {
         theme.setMinWidth(0);
         theme.setTextSize(21);
         theme.setOnClickListener(view -> {
+            if (live) stopLive(true);
             night = !night;
             getPreferences(MODE_PRIVATE).edit().putBoolean("night", night).apply();
             showScreen();
@@ -253,6 +261,11 @@ public final class MainActivity extends ComponentActivity {
         FrameLayout image = new FrameLayout(this);
         image.setBackground(rounded(palette.soft, 22));
         image.setClipToOutline(true);
+        cameraPreview = new PreviewView(this);
+        cameraPreview.setImplementationMode(PreviewView.ImplementationMode.COMPATIBLE);
+        cameraPreview.setScaleType(PreviewView.ScaleType.FIT_CENTER);
+        cameraPreview.setVisibility(View.INVISIBLE);
+        image.addView(cameraPreview, new FrameLayout.LayoutParams(-1, -1));
         preview = new BoxPreview();
         image.addView(preview, new FrameLayout.LayoutParams(-1, -1));
         LinearLayout prompt = column();
@@ -616,6 +629,14 @@ public final class MainActivity extends ComponentActivity {
         int token = ++generation;
         previewVersion++;
         live = true;
+        PreviewView stream = cameraPreview;
+        stream.setVisibility(View.VISIBLE);
+        stream.getPreviewStreamState().removeObservers(this);
+        stream.getPreviewStreamState().observe(this, state -> {
+            if (live && token == generation && state == PreviewView.StreamState.STREAMING) {
+                placeholder.setVisibility(View.GONE);
+            }
+        });
         photoBitmap = null;
         renderPhoto();
         showResult(false);
@@ -623,22 +644,29 @@ public final class MainActivity extends ComponentActivity {
         setStatus("Starting live camera…");
         int rotation = preview.getDisplay() == null ? android.view.Surface.ROTATION_0 : preview.getDisplay().getRotation();
         AtomicBoolean pendingPreview = new AtomicBoolean();
-        liveCamera.start(rotation, new LiveCamera.Listener() {
-            @Override public void onFrame(Bitmap image) {
+        liveCamera.start(stream, rotation, new LiveCamera.Listener() {
+            @Override public void onFrame(Bitmap image, OutputTransform transform) {
                 if (!pendingPreview.compareAndSet(false, true)) {
                     image.recycle();
                     return;
                 }
                 try {
                     List<MangoModels.Detection> boxes = models().detect(image, confidence / 100f);
+                    int width = image.getWidth();
+                    int height = image.getHeight();
+                    if (transform != null) image.recycle();
                     runOnUiThread(() -> {
                         try {
                             if (destroyed || token != generation || !live) {
-                                image.recycle();
+                                if (transform == null) image.recycle();
                                 return;
                             }
-                            preview.setImageBitmap(image);
-                            preview.setBoxes(boxes);
+                            if (transform == null) {
+                                preview.setImageBitmap(image);
+                                preview.setBoxes(boxes);
+                            } else {
+                                showLiveBoxes(stream, transform, width, height, boxes);
+                            }
                             placeholder.setVisibility(View.GONE);
                             String label = boxes.isEmpty() ? "No matches" : boxes.get(0).label();
                             String summary = "Live · " + label + (boxes.size() > 1 ? " · " + boxes.size() + " regions" : "");
@@ -664,11 +692,30 @@ public final class MainActivity extends ComponentActivity {
         });
     }
 
+    private void showLiveBoxes(PreviewView stream, OutputTransform source, int width, int height,
+                               List<MangoModels.Detection> boxes) {
+        OutputTransform target = stream.getOutputTransform();
+        if (target == null) return;
+        CoordinateTransform mapping = new CoordinateTransform(source, target);
+        List<MangoModels.Detection> mapped = new ArrayList<>();
+        for (MangoModels.Detection item : boxes) {
+            RectF box = item.box();
+            RectF display = new RectF(box.left * width, box.top * height, box.right * width, box.bottom * height);
+            mapping.mapRect(display);
+            if (display.intersect(0, 0, stream.getWidth(), stream.getHeight())) {
+                mapped.add(new MangoModels.Detection(item.label(), item.confidence(), display));
+            }
+        }
+        preview.setLiveBoxes(mapped);
+    }
+
     private void stopLive(boolean restore) {
         if (!live) return;
         generation++;
         live = false;
+        cameraPreview.getPreviewStreamState().removeObservers(this);
         liveCamera.stop();
+        cameraPreview.setVisibility(View.INVISIBLE);
         renderPhoto();
         if (restore) {
             setStatus("Live detection stopped.");
@@ -915,6 +962,7 @@ public final class MainActivity extends ComponentActivity {
         private final Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG);
         private final RectF bounds = new RectF();
         private List<MangoModels.Detection> boxes = Collections.emptyList();
+        private boolean viewCoordinates;
 
         BoxPreview() {
             super(MainActivity.this);
@@ -923,6 +971,13 @@ public final class MainActivity extends ComponentActivity {
         }
 
         void setBoxes(List<MangoModels.Detection> found) {
+            viewCoordinates = false;
+            boxes = found;
+            invalidate();
+        }
+
+        void setLiveBoxes(List<MangoModels.Detection> found) {
+            viewCoordinates = true;
             boxes = found;
             invalidate();
         }
@@ -930,9 +985,14 @@ public final class MainActivity extends ComponentActivity {
         @Override
         protected void onDraw(Canvas canvas) {
             super.onDraw(canvas);
-            if (getDrawable() == null || boxes.isEmpty()) return;
-            bounds.set(getDrawable().getBounds());
-            getImageMatrix().mapRect(bounds);
+            if (boxes.isEmpty()) return;
+            if (viewCoordinates) {
+                bounds.set(0, 0, 1, 1);
+            } else {
+                if (getDrawable() == null) return;
+                bounds.set(getDrawable().getBounds());
+                getImageMatrix().mapRect(bounds);
+            }
             paint.setTypeface(Typeface.DEFAULT_BOLD);
             paint.setTextSize(dp(11));
             paint.setStrokeWidth(dp(2));

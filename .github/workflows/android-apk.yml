@@ -33,16 +33,14 @@ jobs:
         run: gradle --no-daemon :app:lintDebug :app:assembleDebug
       - name: Verify APK signature and bundled models
         run: |
-          for variant in universal arm64-v8a; do
-            apk="android/native/app/build/outputs/apk/debug/app-$variant-debug.apk"
-            "$ANDROID_HOME/build-tools/36.0.0/apksigner" verify --verbose "$apk"
-            for asset in android/assets/*; do
-              unzip -p "$apk" "assets/$(basename "$asset")" | cmp - "$asset"
-            done
-            cp "$apk" "MangoCare-AI-$variant.apk"
+          apk=android/native/app/build/outputs/apk/debug/app-debug.apk
+          "$ANDROID_HOME/build-tools/36.0.0/apksigner" verify --verbose "$apk"
+          for asset in android/assets/*; do
+            unzip -p "$apk" "assets/$(basename "$asset")" | cmp - "$asset"
           done
+          cp "$apk" MangoCare-AI-universal.apk
       - uses: actions/upload-artifact@v7
         with:
           name: MangoCare-Android-APK
-          path: MangoCare-AI-*.apk
+          path: MangoCare-AI-universal.apk
           if-no-files-found: error
