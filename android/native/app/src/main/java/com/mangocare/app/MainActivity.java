@@ -32,6 +32,7 @@ import android.widget.SeekBar;
 import android.widget.TextView;
 
 import androidx.activity.ComponentActivity;
+import androidx.activity.OnBackPressedCallback;
 import androidx.activity.result.contract.ActivityResultContracts;
 import androidx.core.content.ContextCompat;
 import androidx.core.content.FileProvider;
@@ -40,6 +41,7 @@ import androidx.core.view.WindowCompat;
 import androidx.core.view.WindowInsetsCompat;
 
 import org.json.JSONArray;
+import org.json.JSONException;
 import org.json.JSONObject;
 
 import java.io.BufferedReader;
@@ -70,6 +72,7 @@ public final class MainActivity extends ComponentActivity {
     private final List<Scan> scans = new ArrayList<>();
     private MangoModels models;
     private LiveCamera liveCamera;
+    private ScanHistory scanHistory;
     private JSONObject careContent;
     private Palette palette;
     private boolean night;
@@ -77,6 +80,7 @@ public final class MainActivity extends ComponentActivity {
     private boolean live;
     private boolean busy;
     private boolean destroyed;
+    private boolean historyOpen;
     private volatile int generation;
     private volatile int confidence = 25;
     private int selected = -1;
@@ -88,6 +92,7 @@ public final class MainActivity extends ComponentActivity {
     private LinearLayout queue;
     private HorizontalScrollView queueScroll;
     private LinearLayout result;
+    private LinearLayout historyList;
     private View placeholder;
     private BoxPreview preview;
     private TextView empty;
@@ -102,7 +107,12 @@ public final class MainActivity extends ComponentActivity {
     private Button liveButton;
     private Button run;
     private Button reset;
-    private Button theme;
+    private Button historyButton;
+    private final OnBackPressedCallback historyBack = new OnBackPressedCallback(false) {
+        @Override public void handleOnBackPressed() {
+            closeHistory();
+        }
+    };
 
     private final androidx.activity.result.ActivityResultLauncher<Intent> galleryPicker =
             registerForActivityResult(new ActivityResultContracts.StartActivityForResult(), reply -> {
@@ -154,6 +164,8 @@ public final class MainActivity extends ComponentActivity {
                 == Configuration.UI_MODE_NIGHT_YES;
         night = getPreferences(MODE_PRIVATE).getBoolean("night", systemNight);
         liveCamera = new LiveCamera(this, worker);
+        scanHistory = new ScanHistory(this);
+        getOnBackPressedDispatcher().addCallback(this, historyBack);
         careContent = readCare();
         if (state != null) {
             detection = state.getBoolean("detection", true);
@@ -171,6 +183,7 @@ public final class MainActivity extends ComponentActivity {
         }
         showScreen();
         if (!photos.isEmpty()) selectPhoto(Math.max(0, selected), false);
+        if (state != null && state.getBoolean("historyOpen")) openHistory();
     }
 
     @Override
@@ -179,6 +192,7 @@ public final class MainActivity extends ComponentActivity {
         state.putBoolean("detection", detection);
         state.putInt("confidence", confidence);
         state.putInt("selected", selected);
+        state.putBoolean("historyOpen", historyOpen);
         if (pendingPhoto != null) state.putString("pendingPhoto", pendingPhoto.getAbsolutePath());
         ArrayList<String> uris = new ArrayList<>();
         ArrayList<String> files = new ArrayList<>();
@@ -196,14 +210,7 @@ public final class MainActivity extends ComponentActivity {
         var systemBars = WindowCompat.getInsetsController(getWindow(), getWindow().getDecorView());
         systemBars.setAppearanceLightStatusBars(!night);
         systemBars.setAppearanceLightNavigationBars(!night);
-        ScrollView scroll = new ScrollView(this);
-        scroll.setFillViewport(true);
-        scroll.setBackgroundColor(palette.background);
-        ViewCompat.setOnApplyWindowInsetsListener(scroll, (view, insets) -> {
-            var bars = insets.getInsets(WindowInsetsCompat.Type.systemBars() | WindowInsetsCompat.Type.displayCutout());
-            view.setPadding(bars.left, bars.top, bars.right, bars.bottom);
-            return insets;
-        });
+        ScrollView scroll = screenScroll();
         LinearLayout content = column();
         content.setPadding(dp(18), dp(14), dp(18), dp(22));
         scroll.addView(content);
@@ -212,13 +219,24 @@ public final class MainActivity extends ComponentActivity {
         title.addView(heading("MangoCare AI", 26));
         title.addView(text("Mango leaf scanner", 14, palette.muted));
         top.addView(title, new LinearLayout.LayoutParams(0, -2, 1));
-        theme = button(night ? "Day mode" : "Night mode", false);
+        historyButton = button("History", false);
+        historyButton.setOnClickListener(view -> openHistory());
+        top.addView(historyButton);
+        Button theme = button(night ? "☀" : "☾", false);
+        String themeLabel = night ? "Day mode" : "Night mode";
+        theme.setContentDescription(themeLabel);
+        theme.setTooltipText(themeLabel);
+        theme.setMinimumWidth(0);
+        theme.setMinWidth(0);
+        theme.setTextSize(21);
         theme.setOnClickListener(view -> {
             night = !night;
             getPreferences(MODE_PRIVATE).edit().putBoolean("night", night).apply();
             showScreen();
         });
-        top.addView(theme);
+        LinearLayout.LayoutParams themeParams = new LinearLayout.LayoutParams(dp(46), -2);
+        themeParams.setMarginStart(dp(7));
+        top.addView(theme, themeParams);
         content.addView(top);
 
         LinearLayout mode = row();
@@ -310,6 +328,85 @@ public final class MainActivity extends ComponentActivity {
         refreshPhotos();
         showResult(false);
         setStatus(message != null ? message : modeHint());
+    }
+
+    private ScrollView screenScroll() {
+        ScrollView scroll = new ScrollView(this);
+        scroll.setFillViewport(true);
+        scroll.setBackgroundColor(palette.background);
+        ViewCompat.setOnApplyWindowInsetsListener(scroll, (view, insets) -> {
+            var bars = insets.getInsets(WindowInsetsCompat.Type.systemBars() | WindowInsetsCompat.Type.displayCutout());
+            view.setPadding(bars.left, bars.top, bars.right, bars.bottom);
+            return insets;
+        });
+        return scroll;
+    }
+
+    private void openHistory() {
+        if (busy || historyOpen) return;
+        if (live) stopLive(false);
+        historyOpen = true;
+        historyBack.setEnabled(true);
+        ScrollView scroll = screenScroll();
+        LinearLayout content = column();
+        content.setPadding(dp(18), dp(14), dp(18), dp(22));
+        scroll.addView(content);
+        LinearLayout header = row();
+        header.addView(heading("Scan history", 26), new LinearLayout.LayoutParams(0, -2, 1));
+        Button back = button("Back to scanner", false);
+        back.setOnClickListener(view -> closeHistory());
+        header.addView(back);
+        content.addView(header);
+        LinearLayout list = column();
+        historyList = list;
+        addBlock(content, list, 14);
+        list.addView(text("Loading history…", 15, palette.muted));
+        setContentView(scroll);
+        ViewCompat.requestApplyInsets(scroll);
+
+        worker.execute(() -> {
+            try {
+                List<ScanHistory.Entry> entries = scanHistory.entries();
+                runOnUiThread(() -> {
+                    if (destroyed || historyList != list) return;
+                    list.removeAllViews();
+                    if (entries.isEmpty()) list.addView(text("No scans yet.", 15, palette.muted));
+                    for (ScanHistory.Entry entry : entries) addHistoryEntry(list, entry);
+                });
+            } catch (IOException | JSONException error) {
+                Log.e(TAG, "Could not read scan history", error);
+                runOnUiThread(() -> {
+                    if (destroyed || historyList != list) return;
+                    list.removeAllViews();
+                    list.addView(text("Could not open scan history.", 15, palette.muted));
+                });
+            }
+        });
+    }
+
+    private void addHistoryEntry(LinearLayout list, ScanHistory.Entry entry) {
+        LinearLayout card = row();
+        card.setPadding(dp(9), dp(9), dp(12), dp(9));
+        card.setBackground(rounded(palette.surface, 16));
+        ImageView photo = new ImageView(this);
+        photo.setScaleType(ImageView.ScaleType.CENTER_CROP);
+        photo.setImageBitmap(entry.thumbnail());
+        photo.setBackground(rounded(palette.soft, 10));
+        photo.setClipToOutline(true);
+        photo.setContentDescription("Scanned photo");
+        LinearLayout.LayoutParams picture = new LinearLayout.LayoutParams(dp(62), dp(62));
+        picture.setMarginEnd(dp(12));
+        card.addView(photo, picture);
+        card.addView(text(entry.caption(), 16, palette.ink), new LinearLayout.LayoutParams(0, -2, 1));
+        addBlock(list, card, 8);
+    }
+
+    private void closeHistory() {
+        historyOpen = false;
+        historyList = null;
+        historyBack.setEnabled(false);
+        showScreen();
+        if (selected >= 0 && photoBitmap == null) selectPhoto(selected, false);
     }
 
     private String modeHint() {
@@ -465,6 +562,7 @@ public final class MainActivity extends ComponentActivity {
                     bitmap = decode(batch.get(i).uri());
                     outcome = detect ? new Scan(models().detect(bitmap, cutoff), Collections.emptyList(), null)
                             : new Scan(Collections.emptyList(), models().classify(bitmap), null);
+                    if (token == generation) saveHistory(detect, outcome, bitmap);
                 } catch (IOException | RuntimeException | LinkageError error) {
                     Log.e(TAG, "Photo scan failed", error);
                     outcome = new Scan(Collections.emptyList(), Collections.emptyList(), "Could not scan this photo.");
@@ -476,6 +574,22 @@ public final class MainActivity extends ComponentActivity {
                 runOnUiThread(() -> finishScan(token, index, batch.size(), found));
             }
         });
+    }
+
+    private void saveHistory(boolean detect, Scan scan, Bitmap photo) {
+        String caption = "Classification";
+        String label;
+        if (detect) {
+            caption = "Detection";
+            label = scan.boxes().isEmpty() ? "No matches" : scan.boxes().get(0).label();
+        } else {
+            label = scan.scores().get(0).label();
+        }
+        try {
+            scanHistory.add(caption + " · " + label, photo);
+        } catch (IOException | JSONException | RuntimeException error) {
+            Log.e(TAG, "Could not save scan history", error);
+        }
     }
 
     private void finishScan(int token, int index, int size, Scan scan) {
@@ -661,6 +775,7 @@ public final class MainActivity extends ComponentActivity {
         enable(camera, !busy && !live && photos.size() < LIMIT);
         enable(detectMode, !busy);
         enable(classifyMode, !busy);
+        enable(historyButton, !busy);
         enable(run, !busy && !live && !photos.isEmpty());
         enable(reset, busy || live || !photos.isEmpty() || confidence != 25);
         for (int i = 0; i < queue.getChildCount(); i++) enable((Button) queue.getChildAt(i), !live && !busy);

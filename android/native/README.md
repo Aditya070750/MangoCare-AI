@@ -4,6 +4,8 @@ MangoCare uses the two bundled LiteRT models on the phone. Add up to 12 gallery 
 
 The Android care text comes from the website's `guidance.py`. The app bundles a copy in `app/src/main/res/raw/leaf_care.json` so it is available offline.
 
+History keeps the latest 24 completed photo scans on the device, with one small thumbnail and a short caption per scan. Live video frames are excluded. Reset clears the current scanner workspace while preserving History.
+
 ## Build
 
 Open `android/native` in Android Studio. This project uses Android SDK 36, SDK Build Tools 36.0.0, JDK 17 and Gradle 9.3.1. Keep the `android/assets` folder next to this project so Gradle can package its models and labels.
